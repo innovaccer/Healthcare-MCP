@@ -8,10 +8,10 @@ and managing server sessions. It provides simple methods to call tools, access r
 and use the sampling capabilities of HMCP servers.
 
 Usage:
-    from hmcp_server_helper import HMCPServerHelper
+    from hmcp_server_helper import HMCPClientConnector
 
     # Create a helper for an existing HMCP server
-    helper = HMCPServerHelper(host="localhost", port=8050)
+    helper = HMCPClientConnector(host="localhost", port=8050)
 
     # Connect to the server
     await helper.connect()
@@ -29,24 +29,19 @@ Usage:
 from __future__ import annotations
 import asyncio
 import logging
-import json
 from asyncio import Lock
 from contextlib import AsyncExitStack
-from typing import Any, Dict, List, Optional, Union, TypeVar, Type, Tuple
-import os
-
-from hmcp.shared.auth import AuthConfig, OAuthClient, jwt_handler
+from typing import Any, Dict, List, Optional
+import httpx
+from hmcp.shared.auth import OAuthClient
 from hmcp.client.hmcp_client import HMCPClient
-import mcp.types as types
 from mcp.client.sse import sse_client
 from mcp import ClientSession
-from mcp.shared.exceptions import McpError
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
-    CreateMessageResult,
     SamplingMessage,
     TextContent,
     ErrorData,
-    Tool as MCPTool,
     CallToolResult,
     ListToolsResult,
     ListPromptsResult,
@@ -54,14 +49,13 @@ from mcp.types import (
     ListResourcesResult,
     ReadResourceResult,
 )
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from mcp.types import JSONRPCMessage
+from datetime import timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
-class HMCPServerHelper:
+class HMCPClientConnector:
     """
     A helper class that simplifies interactions with HMCP servers.
 
@@ -72,49 +66,55 @@ class HMCPServerHelper:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 8050,
-        auth_config: Optional[AuthConfig] = None,
-        client_id: str = "test-client",
-        client_secret: str = "test-secret",
+        url: str,
         debug: bool = False,
+        client_id: str = None,
+        client_secret: str = None,
+        scopes: List[str] = None,
     ):
         """
         Initialize the HMCP Server Helper.
 
         Args:
-            host: The hostname or IP address of the HMCP server
-            port: The port number the HMCP server is listening on
+            url: url to the mcp server
             auth_config: Optional authentication configuration
             client_id: Client ID to use for authentication
             client_secret: Client secret to use for authentication
             debug: Whether to enable debug logging
         """
-        self.host = host
-        self.port = port
-        self.url = f"http://{host}:{port}"
+        self.server_url = url
         self.debug = debug
+
+        if client_id and client_secret and scopes:
+            self.oauth_client = OAuthClient(
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=scopes,
+                server_url=self.server_url,
+            )
+        else:
+            self.oauth_client = None
 
         # Set up logging
         log_level = logging.DEBUG if debug else logging.INFO
         logging.basicConfig(level=log_level)
 
-        # Initialize auth components
-        self.auth_config = auth_config or AuthConfig()
-        self.jwt_handler = jwt_handler.JWTHandler(self.auth_config)
-        self.oauth_client = OAuthClient(
-            client_id=client_id, client_secret=client_secret, config=self.auth_config
-        )
-
         # Initialize connection components
         self.session = None
+        self.session_id = None
         self.client = None
         self.exit_stack = AsyncExitStack()
         self._cleanup_lock = Lock()
         self.connected = False
         self.server_info = None
 
-    async def connect(self) -> Dict[str, Any]:
+    async def connect(
+        self,
+        transport: str = "streamable-http",
+        timeout: int = 30,
+        sse_read_timeout: int = 5,
+        headers: Dict[str, str] = {},
+    ) -> Dict[str, Any]:
         """
         Connect to the HMCP server.
 
@@ -132,23 +132,36 @@ class HMCPServerHelper:
             return self._get_server_info()
 
         try:
-            # Generate a JWT token
-            token = self.jwt_handler.generate_token(
-                client_id=self.oauth_client.client_id,
-                scope=" ".join(self.auth_config.OAUTH_SCOPES[:3]),
-            )
+            auth_headers = {}
+            if self.oauth_client:
+                async with self.oauth_client:
+                    # Set the token in the OAuth client
+                    await self.oauth_client.set_client_credentials_token()
+                    auth_headers = self.oauth_client.get_auth_header()
 
-            # Set the token in the OAuth client
-            self.oauth_client.set_token({"access_token": token})
-            auth_headers = self.oauth_client.get_auth_header()
+            headers = {**auth_headers, **headers}
 
-            logger.debug(f"Connecting to HMCP server at {self.url}/sse")
+            logger.debug(f"Connecting to HMCP server at {self.server_url}/sse")
 
             # Setup streams and session using AsyncExitStack to properly manage cleanup
-            transport = await self.exit_stack.enter_async_context(
-                self._create_streams(auth_headers)
+            conn_transport = await self.exit_stack.enter_async_context(
+                self._create_streams(
+                    headers,
+                    transport=transport,
+                    timeout=timeout,
+                    sse_read_timeout=sse_read_timeout,
+                )
             )
-            read_stream, write_stream = transport
+
+            # Streamable HTTP transport returns (read_stream, write_stream, get_session_id)
+            # SSE transport returns (read_stream, write_stream)
+            if transport == "streamable-http":
+                read_stream, write_stream, get_session_id = conn_transport
+                # Store session ID callback for later use
+                self.get_session_id = get_session_id
+            else:
+                read_stream, write_stream = conn_transport
+                self.get_session_id = None
 
             self.session = await self.exit_stack.enter_async_context(
                 ClientSession(read_stream, write_stream)
@@ -156,6 +169,17 @@ class HMCPServerHelper:
 
             # Initialize the session
             init_result = await self.session.initialize()
+
+            # Create the HMCP client
+            self.client = HMCPClient(self.session)
+            self.connected = True
+
+            logger.info(
+                f"Connected to {init_result.serverInfo.name} v{init_result.serverInfo.version}"
+            )
+
+            # Note: Session ID callback was removed in MCP SDK v1.26.0
+            # Session management is now handled internally by the transport layer
 
             # Store server info
             self.server_info = {
@@ -165,22 +189,55 @@ class HMCPServerHelper:
                 "capabilities": init_result.capabilities,
             }
 
-            # Create the HMCP client
-            self.client = HMCPClient(self.session)
-            self.connected = True
-
-            logger.info(
-                f"Connected to {init_result.serverInfo.name} v{init_result.serverInfo.version}"
-            )
             return self.server_info
 
         except Exception as e:
             logger.error(f"Failed to connect to HMCP server: {str(e)}")
+            logger.exception("Full traceback:")  # Add detailed traceback
             # Ensure proper cleanup on failure
             await self.cleanup()
             raise
 
-    def _create_streams(self, headers: Dict[str, str]):
+    def _create_streams(
+        self,
+        headers: Dict[str, str],
+        transport: str,
+        timeout: int,
+        sse_read_timeout: int,
+    ):
+        """
+        Create the streams to connect to the server.
+        """
+        if transport == "streamable-http":
+            return self._create_streamable_http_streams(
+                headers, timeout, sse_read_timeout
+            )
+        elif transport == "sse":
+            return self._create_sse_streams(headers, timeout, sse_read_timeout)
+        else:
+            raise ValueError(f"Invalid transport: {transport}")
+
+    def _create_streamable_http_streams(
+        self, headers: Dict[str, str], timeout: int, sse_read_timeout: int
+    ):
+        """
+        Create the Streamable HTTP streams to connect to the server.
+        Uses httpx.AsyncClient for proper timeout and header configuration.
+        """
+        # Create httpx client with timeout and headers
+        http_client = httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(timeout, read=60 * sse_read_timeout),
+            follow_redirects=True,
+        )
+        return streamable_http_client(
+            url=f"{self.server_url}/mcp/",
+            http_client=http_client,
+        )
+
+    def _create_sse_streams(
+        self, headers: Dict[str, str], timeout: int, sse_read_timeout: int
+    ):
         """
         Create the SSE streams to connect to the server.
         This is a helper method for connect().
@@ -189,10 +246,11 @@ class HMCPServerHelper:
             An async context manager that yields a tuple of (read_stream, write_stream)
         """
         return sse_client(
-            url=f"{self.url}/sse",
+            url=f"{self.server_url}/sse/",
             headers=headers,
-            timeout=5,  # HTTP timeout
-            sse_read_timeout=300,  # SSE read timeout (5 minutes)
+            timeout=float(timeout),  # HTTP timeout in seconds
+            # SSE read timeout in seconds (default 5 minutes = 300 seconds)
+            sse_read_timeout=float(60 * sse_read_timeout),
         )
 
     async def cleanup(self) -> None:
@@ -207,16 +265,44 @@ class HMCPServerHelper:
 
         async with self._cleanup_lock:
             try:
+                # First mark as disconnected to prevent new operations
                 self.connected = False
+
+                # Store references to clear
+                session = self.session
+                client = self.client
+
+                # Clear references first
                 self.session = None
                 self.client = None
 
-                # Close the exit stack to clean up all context managers
-                await self.exit_stack.aclose()
+                # Close the exit stack if it exists
+                if hasattr(self, "exit_stack"):
+                    try:
+                        await self.exit_stack.aclose()
+                    except asyncio.CancelledError:
+                        logger.debug("Exit stack cleanup was cancelled during shutdown")
+                    except Exception as e:
+                        logger.debug(
+                            f"Non-critical error during exit stack cleanup: {str(e)}"
+                        )
+
+                # Explicitly close session if it exists
+                if session:
+                    try:
+                        await session.close()
+                    except asyncio.CancelledError:
+                        logger.debug("Session cleanup was cancelled during shutdown")
+                    except Exception as e:
+                        logger.debug(
+                            f"Non-critical error during session cleanup: {str(e)}"
+                        )
+
                 logger.debug("Cleaned up HMCP server connection")
 
             except Exception as e:
                 logger.error(f"Error during cleanup: {str(e)}")
+                # Don't re-raise the error to ensure cleanup completes
 
     def _ensure_connected(self) -> None:
         """
@@ -260,20 +346,9 @@ class HMCPServerHelper:
         try:
             result: ListToolsResult = await self.session.list_tools()
 
+            logger.info(f"Client Connector ListToolsResult: {result}")
             # Convert to a more user-friendly format
-            tools_list = []
-            for tool in result.tools:
-                tool_dict = {
-                    "name": tool.name,
-                    "description": tool.description,
-                }
-
-                # Add schema information if available
-                if hasattr(tool, "schema") and tool.schema:
-                    tool_dict["schema"] = tool.schema
-
-                tools_list.append(tool_dict)
-
+            tools_list = [tool for tool in result.tools]
             return tools_list
 
         except Exception as e:
@@ -301,12 +376,12 @@ class HMCPServerHelper:
 
         try:
             result: CallToolResult = await self.session.call_tool(tool_name, arguments)
-
+            logger.info(f"CallToolResult: {result}")
             # Convert to a dictionary for easier use
-            if hasattr(result, "result") and result.result is not None:
-                return result.result
+            if hasattr(result, "content") and result.content is not None:
+                return result.content
             else:
-                return {}
+                return []
 
         except Exception as e:
             logger.error(f"Error calling tool {tool_name}: {str(e)}")
@@ -515,7 +590,7 @@ class HMCPServerHelper:
                 logger.error(f"Error creating message: {str(e)}")
             raise
 
-    async def __aenter__(self) -> "HMCPServerHelper":
+    async def __aenter__(self) -> "HMCPClientConnector":
         """
         Enter the async context manager.
 

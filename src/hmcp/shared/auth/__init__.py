@@ -1,6 +1,4 @@
-from .oauth_server import OAuthServer
 from .oauth_client import OAuthClient
-from .config import AuthConfig
 from .exceptions import (
     AuthenticationError,
     InvalidTokenError,
@@ -9,9 +7,7 @@ from .exceptions import (
 )
 
 __all__ = [
-    "OAuthServer",
     "OAuthClient",
-    "AuthConfig",
     "AuthenticationError",
     "InvalidTokenError",
     "ClientValidationError",

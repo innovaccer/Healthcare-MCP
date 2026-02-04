@@ -1,2 +1,5 @@
-.. # this is a temporary to install the dependencies
-# hmcp==0.0.1 this will be replaced with the local package when the package is published
+# External dependencies for examples
+openai-agents==0.0.14
+langchain-groq>=0.3.2
+langchain-openai>=0.3.14
+python-dotenv>=1.0.0

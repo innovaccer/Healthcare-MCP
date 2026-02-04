@@ -1,22 +1,19 @@
 # Main dependencies
 asyncio>=3.4.3
-langchain-groq>=0.3.2
 mcp-use>=1.2.7
-mcp[cli]==1.9.0
+mcp[cli]==1.26.0
 nest-asyncio>=1.6.0
-fastmcp==2.3.4
-uvicorn>=0.27.0
-starlette>=0.36.0
+uvicorn==0.34.3
+starlette==0.49.1
 PyJWT>=2.8.0
 python-jose>=3.3.0
 cryptography>=41.0.0
-nemoguardrails==0.13.0
-langchain-openai==0.3.14
-openai-agents==0.0.16
+python_multipart==0.0.20
+aiohttp>=3.8.0
+python-jose>=3.3.0
 
 # Test/Lint dependencies
 pytest==8.3.5
 pytest-asyncio==0.26.0
 pytest-mock==3.14.0
 black==25.1.0
-pytest-cov==6.1.1

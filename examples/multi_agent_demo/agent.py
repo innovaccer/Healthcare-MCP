@@ -31,14 +31,13 @@ from typing_extensions import NotRequired, TypedDict, Awaitable
 
 # Import from local hmcp package
 from hmcp.client.hmcp_client import HMCPClient
-from hmcp.server.hmcp_server import HMCPServer
 
 # Import from external agents package (assuming agents package is installed)
 # try:
 from agents import Agent
 from agents.agent import ToolsToFinalOutputResult
 from agents.agent_output import AgentOutputSchemaBase
-from agents.guardrail import InputGuardrail, OutputGuardrail
+
 from agents.handoffs import Handoff
 from agents.model_settings import ModelSettings
 from agents import Model, ModelResponse, Usage
@@ -52,7 +51,7 @@ from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 
 # Import HMCPServerHelper
-from hmcp.shared.server_helper.server_helper import HMCPServerHelper
+from hmcp.client.client_connector import HMCPClientConnector
 
 # Create a generic type variable for the context
 TContext = TypeVar("TContext")
@@ -89,7 +88,7 @@ class HMCPModel(Model):
 
     def __init__(
         self,
-        hmcp_helper: HMCPServerHelper,
+        hmcp_helper: HMCPClientConnector,
         settings: Optional[HMCPAgentSettings] = None,
     ):
         """Initialize the HMCP Model.
@@ -115,7 +114,7 @@ class HMCPModel(Model):
         """Get a response from the HMCP server."""
         # Connect to the HMCP server if not already connected
         if not self.hmcp_helper.connected:
-            await self.hmcp_helper.connect()
+            await self.hmcp_helper.connect(transport="streamable-http")
 
         # Convert input items to message history format for HMCP
         messages_history = []
@@ -123,7 +122,8 @@ class HMCPModel(Model):
         # Add the input items to the message history
         for item in input:
             if hasattr(item, "role") and hasattr(item, "content"):
-                messages_history.append({"role": item.role, "content": item.content})
+                messages_history.append(
+                    {"role": item.role, "content": item.content})
             elif isinstance(item, dict) and "role" in item and "content" in item:
                 messages_history.append(
                     {"role": item["role"], "content": item["content"]}
@@ -254,7 +254,7 @@ class HMCPAgent(Generic[TContext]):
     name: str
     """The name of the agent."""
 
-    hmcp_helper: HMCPServerHelper
+    hmcp_helper: HMCPClientConnector
     """The HMCP Server Helper instance used to communicate with the HMCP server."""
 
     instructions: Union[
@@ -277,17 +277,12 @@ class HMCPAgent(Generic[TContext]):
     model: Union[str, Model] = field(default_factory=lambda: None)
     """The model implementation. For HMCPAgent, this will be automatically created using HMCPModel."""
 
-    handoffs: List[Union[Agent[Any], Handoff[TContext]]] = field(default_factory=list)
+    handoffs: List[Union[Agent[Any], Handoff[TContext]]
+                   ] = field(default_factory=list)
     """Handoffs are sub-agents that the agent can delegate to."""
 
     tools: List[Tool] = field(default_factory=list)
     """A list of tools that the agent can use."""
-
-    input_guardrails: List[InputGuardrail[TContext]] = field(default_factory=list)
-    """Input guardrails for the agent."""
-
-    output_guardrails: List[OutputGuardrail[TContext]] = field(default_factory=list)
-    """Output guardrails for the agent."""
 
     output_type: Optional[Union[type[Any], AgentOutputSchemaBase]] = None
     """The type of the output object."""
@@ -354,7 +349,7 @@ class HMCPAgent(Generic[TContext]):
 
         # Connect to the HMCP server if not already connected
         if not self.hmcp_helper.connected:
-            await self.hmcp_helper.connect()
+            await self.hmcp_helper.connect(transport="streamable-http")
 
         try:
             # Send the message to the HMCP server
@@ -406,8 +401,7 @@ class HMCPAgent(Generic[TContext]):
             model=self.model,
             model_settings=self.model_settings,
             tools=self.tools,
-            input_guardrails=self.input_guardrails,
-            output_guardrails=self.output_guardrails,
+
             output_type=self.output_type,
             tool_use_behavior=self.tool_use_behavior,
         )
@@ -443,7 +437,8 @@ class HMCPAgent(Generic[TContext]):
         self,
         tool_name: Optional[str] = None,
         tool_description: Optional[str] = None,
-        custom_output_extractor: Optional[Callable[[RunResult], Awaitable[str]]] = None,
+        custom_output_extractor: Optional[Callable[[
+            RunResult], Awaitable[str]]] = None,
     ) -> Tool:
         """
         Transform this agent into a tool, callable by other agents.
@@ -452,7 +447,8 @@ class HMCPAgent(Generic[TContext]):
         from agents.tool import function_tool
         from agents.util import _transforms
 
-        name = tool_name or _transforms.transform_string_function_style(self.name)
+        name = tool_name or _transforms.transform_string_function_style(
+            self.name)
         description = (
             tool_description or f"Use the {self.name} HMCP Agent to process information"
         )
@@ -465,7 +461,7 @@ class HMCPAgent(Generic[TContext]):
 
             # Connect if needed
             if not self.hmcp_helper.connected:
-                await self.hmcp_helper.connect()
+                await self.hmcp_helper.connect(transport="streamable-http")
 
             try:
                 # Process the message
@@ -479,7 +475,8 @@ class HMCPAgent(Generic[TContext]):
                 # Update history and return
                 content = response.get("content", "")
                 self.message_history.append(
-                    {"role": response.get("role", "assistant"), "content": content}
+                    {"role": response.get(
+                        "role", "assistant"), "content": content}
                 )
 
                 return content
@@ -503,7 +500,7 @@ class HMCPAgent(Generic[TContext]):
     async def __aenter__(self) -> "HMCPAgent[TContext]":
         """Enter the async context manager."""
         if not self.hmcp_helper.connected:
-            await self.hmcp_helper.connect()
+            await self.hmcp_helper.connect(transport="streamable-http")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:

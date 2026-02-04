@@ -25,6 +25,8 @@ Requirements:
     - agents package installed (pip install agents)
 """
 
+from hmcp.client.client_connector import HMCPClientConnector
+from .agent import HMCPAgent
 import asyncio
 import os
 import logging
@@ -43,8 +45,6 @@ AGENTS_AVAILABLE = True
 #     print("Warning: agents package not installed. Install with: pip install agents")
 
 # Import HMCP modules
-from hmcp.agent.agent import HMCPAgent
-from hmcp.shared.server_helper.server_helper import HMCPServerHelper
 
 # Configure logging
 logging.basicConfig(
@@ -99,11 +99,12 @@ async def create_emr_agent() -> HMCPAgent:
     """Create and initialize the EMR Writeback HMCP Agent."""
     logger.info("Creating EMR Writeback Agent")
 
-    # Create the HMCPServerHelper for the EMR Writeback Agent
-    emr_helper = HMCPServerHelper(host=HOST, port=EMR_PORT, debug=True)
+    # Create helper for EMR server
+    emr_helper = HMCPClientConnector(
+        url=f"http://{HOST}:{EMR_PORT}", debug=True)
 
     # Connect to the EMR server
-    await emr_helper.connect()
+    await emr_helper.connect(transport="streamable-http")
     logger.info(f"Connected to EMR server: {emr_helper.server_info['name']}")
 
     # Create the HMCPAgent wrapping the helper
@@ -127,11 +128,14 @@ async def create_patient_data_agent() -> HMCPAgent:
     """Create and initialize the Patient Data HMCP Agent."""
     logger.info("Creating Patient Data Agent")
 
-    # Create the HMCPServerHelper for the Patient Data Agent
-    patient_helper = HMCPServerHelper(host=HOST, port=PATIENT_PORT, debug=True)
+    # Create helper for patient data server
+    patient_helper = HMCPClientConnector(
+        url=f"http://{HOST}:{PATIENT_PORT}",
+        debug=True
+    )
 
     # Connect to the Patient Data server
-    await patient_helper.connect()
+    await patient_helper.connect(transport="streamable-http")
     logger.info(
         f"Connected to Patient Data server: {patient_helper.server_info['name']}"
     )
@@ -156,7 +160,8 @@ async def create_patient_data_agent() -> HMCPAgent:
 async def create_main_agent(emr_agent: HMCPAgent, patient_agent: HMCPAgent) -> Agent:
     """Create the main OpenAI agent that orchestrates the workflow."""
     if not AGENTS_AVAILABLE:
-        raise ImportError("The agents package is required to create the main agent.")
+        raise ImportError(
+            "The agents package is required to create the main agent.")
 
     # Convert HMCP agents to standard agents for handoffs
     emr_standard_agent = emr_agent.to_agent()
@@ -201,13 +206,15 @@ async def run_workflow_demo():
     logger.info("Starting HMCP Agent multi-agent workflow demo")
 
     if not AGENTS_AVAILABLE:
-        logger.error("Agents package is not available. Please install it first.")
+        logger.error(
+            "Agents package is not available. Please install it first.")
         print("\nERROR: This demo requires the 'agents' package to be installed.")
         print("Install it with: pip install agents")
         return
 
     if not OPENAI_API_KEY:
-        logger.error("OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
+        logger.error(
+            "OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
         print("\nERROR: OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
         return
 
@@ -296,7 +303,8 @@ async def run_direct_hmcp_agent_demo():
                 patient_id = "PT12345"  # Default fallback
                 patient_response = response2.get("content", "")
                 if "patient_id=" in patient_response:
-                    patient_id = patient_response.split("patient_id=")[1].split()[0]
+                    patient_id = patient_response.split("patient_id=")[
+                        1].split()[0]
 
                 # Complete the EMR request with patient ID
                 logger.info("Sending complete message to EMR agent")
@@ -305,7 +313,8 @@ async def run_direct_hmcp_agent_demo():
                     f'clinical_data={{"diagnosis": "Hypertension", "blood_pressure": "140/90", "medication": "Lisinopril 10mg"}} patient_id={patient_id}'
                 )
 
-                logger.info(f"Final EMR agent response: {response3.get('content', '')}")
+                logger.info(
+                    f"Final EMR agent response: {response3.get('content', '')}")
 
             finally:
                 await patient_agent.cleanup()

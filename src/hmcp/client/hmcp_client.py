@@ -7,14 +7,10 @@ for sending sampling/createMessage requests to an HMCP Server.
 
 import logging
 from typing import Any, Dict, List, Optional, Union
-import uuid
-import json
 
 import mcp.types as types
 from mcp import ClientSession
-from mcp.shared.context import RequestContext
 from pydantic import RootModel
-from hmcp.shared.auth import OAuthClient, AuthConfig, jwt_handler
 
 # Configure logging for the HMCP client module
 logger = logging.getLogger(__name__)
@@ -103,7 +99,7 @@ class HMCPClient:
         )
 
         # Log the request details for debugging purposes
-        logger.debug(f"Sending sampling request: {createMessageRequest}")
+        logger.info(f"Sending sampling request: {createMessageRequest}")
 
         # Send the request to the server and await the response
         return await self.session.send_request(

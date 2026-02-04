@@ -1,9 +1,0 @@
-prompts:
-  - task: self_check_input
-    content: |
-      This is a placeholder prompt. The self_check_input implementation in actions.py is used instead of LLM-based policy checking.
-      
-      User Message:
-      {user_input}
-      
-      Note: This prompt is not actually used for policy checking as we rely on programmatic rules in actions.py.

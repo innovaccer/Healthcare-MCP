@@ -1,27 +1,34 @@
 from __future__ import annotations
 import logging
-from typing import Any, Literal, Protocol, TypeVar, List, Sequence, Optional
-import uvicorn
+from typing import Any, Literal, Protocol, Optional
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.context import RequestContext
 from mcp.server.lowlevel.server import NotificationOptions
 from mcp.server.sse import SseServerTransport
-from mcp.server.stdio import stdio_server
-from starlette.applications import Starlette
-from starlette.responses import Response
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+from mcp.server.auth.middleware.bearer_auth import (
+    BearerAuthBackend,
+    RequireAuthMiddleware,
+)
+from mcp.server.auth.provider import OAuthAuthorizationServerProvider
+from mcp.server.streamable_http import EventStore
+from starlette.middleware import Middleware
+from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
-from starlette.middleware import Middleware
-from mcp.server.models import InitializationOptions
-from pydantic import RootModel
-from hmcp.shared.auth import OAuthServer, AuthConfig, jwt_handler
-from hmcp.server.fastmcp_auth import AuthMiddleware
-from hmcp.shared.guardrail_config.guardrail import Guardrail, GuardrailException
+from starlette.applications import Starlette
+from pydantic import RootModel, BaseModel
 
 # Configure logging for the HMCP server module
 logger = logging.getLogger(__name__)
+
+# Use the MCP SDK's CreateMessageRequest instead of defining a custom one
+# This ensures compatibility with the standard MCP protocol
+CreateMessageRequest = types.CreateMessageRequest
 
 # Extended server result type to include CreateMessageResult
 # This dynamically extends the MCP ServerResult type to support HMCP's extended functionality
@@ -41,6 +48,24 @@ new_server_result_base = RootModel[
 
 # Dynamically create a new class that extends the base ServerResult with our additions
 types.ServerResult = type("ServerResult", (new_server_result_base,), {})
+
+# Update the ClientRequest type to use our custom CreateMessageRequest
+types.ClientRequest = RootModel[
+    types.PingRequest
+    | types.InitializeRequest
+    | types.CompleteRequest
+    | types.SetLevelRequest
+    | types.GetPromptRequest
+    | types.ListPromptsRequest
+    | types.ListResourcesRequest
+    | types.ListResourceTemplatesRequest
+    | types.ReadResourceRequest
+    | types.SubscribeRequest
+    | types.UnsubscribeRequest
+    | types.CallToolRequest
+    | types.ListToolsRequest
+    | CreateMessageRequest
+]
 
 types.StopReason = Literal["endTurn", "stopSequence", "maxTokens", "infoNeeded"] | str
 
@@ -109,17 +134,17 @@ class HMCPServer(FastMCP):
     def __init__(
         self,
         name: str,
-        host: str = "0.0.0.0",
-        port: int = 8050,
+        host: str = "127.0.0.1",
+        port: int = 8060,
         debug: bool = False,
         log_level: str = "INFO",
-        auth_config: Optional[AuthConfig] = None,
         version: str | None = None,
         instructions: str | None = None,
+        auth_server_provider: (
+            OAuthAuthorizationServerProvider[Any, Any, Any] | None
+        ) = None,
+        event_store: EventStore | None = None,
         samplingCallback: SamplingFnT | None = None,
-        enable_guardrails: bool = True,
-        guardrail_config_path: Optional[str] = None,
-        guardrail_instance: Optional[Guardrail] = None,
         *args,
         **kwargs,
     ):
@@ -132,42 +157,22 @@ class HMCPServer(FastMCP):
             instructions: Human-readable instructions for using the server (optional)
             samplingCallback: A callback function to handle sampling requests (optional)
                               If not provided, the server will return errors for sampling requests
-            enable_guardrails: Whether to enable guardrail checks for incoming messages (default: True)
-            guardrail_config_path: Custom path to guardrail configuration (default: None, uses standard path)
-            guardrail_instance: Pre-configured Guardrail instance (default: None, creates a new instance)
             **kwargs: Additional settings to pass to the underlying FastMCP implementation
                        These can include configuration for logging, transports, etc.
         """
         # Initialize the parent FastMCP server with standard settings
         super().__init__(
             name=name,
+            instructions=instructions,
+            auth_server_provider=auth_server_provider,
+            event_store=event_store,
             host=host,
             port=port,
-            instructions=instructions,
             debug=debug,
             log_level=log_level,
             *args,
             **kwargs,
         )
-
-        # Initialize auth components if not provided
-        self.auth_config = auth_config or AuthConfig()
-        self.oauth_server = OAuthServer(self.auth_config)
-        self.jwt_handler = jwt_handler.JWTHandler(self.auth_config)
-
-        # Initialize guardrails
-        self.enable_guardrails = enable_guardrails
-        if enable_guardrails:
-            if guardrail_instance:
-                self.guardrail = guardrail_instance
-            elif guardrail_config_path:
-                self.guardrail = Guardrail(config_path=guardrail_config_path)
-            else:
-                self.guardrail = Guardrail()
-            logger.info(f"Guardrails enabled for {name} server")
-        else:
-            self.guardrail = None
-            logger.info(f"Guardrails disabled for {name} server")
 
         # Define experimental capabilities with sampling for advertisement to clients
         # This allows clients to detect that this server supports HMCP sampling features
@@ -175,7 +180,6 @@ class HMCPServer(FastMCP):
             "hmcp": {
                 "sampling": True,
                 "version": "0.1.0",
-                "guardrails": enable_guardrails,
             }
         }
 
@@ -191,10 +195,24 @@ class HMCPServer(FastMCP):
         self._original_get_capabilities = self._mcp_server.get_capabilities
         self._mcp_server.get_capabilities = self.patched_get_capabilities
 
+    # TODO: // Need to ask kuldeep if we can remove this as its same as fast-mcp method
     def sse_app(self, mount_path: str | None = None) -> Starlette:
-        """Return an instance of the SSE server app with authentication middleware."""
-        logger.info("Creating SSE app with authentication middleware")
-        sse = SseServerTransport(self.settings.message_path)
+        """Return an instance of the SSE server app."""
+
+        # Update mount_path in settings if provided
+        if mount_path is not None:
+            self.settings.mount_path = mount_path
+
+        # Create normalized endpoint considering the mount path
+        normalized_message_endpoint = self._normalize_path(
+            self.settings.mount_path, self.settings.message_path
+        )
+
+        # Set up auth context and dependencies
+
+        sse = SseServerTransport(
+            normalized_message_endpoint,
+        )
 
         async def handle_sse(scope: Scope, receive: Receive, send: Send):
             # Add client ID from auth context into request context if available
@@ -211,99 +229,186 @@ class HMCPServer(FastMCP):
                 )
             return Response()
 
-        async def sse_endpoint(request: Request) -> Response:
-            # Convert the Starlette request to ASGI parameters
-            return await handle_sse(request.scope, request.receive, request._send)
+        # Create routes
+        routes: list[Route | Mount] = []
+        middleware: list[Middleware] = []
+        required_scopes = []
+
+        # Add auth endpoints if auth provider is configured
+        if self._auth_server_provider:
+            assert self.settings.auth
+            from mcp.server.auth.routes import create_auth_routes
+
+            required_scopes = self.settings.auth.required_scopes or []
+
+            middleware = [
+                # extract auth info from request (but do not require it)
+                Middleware(
+                    AuthenticationMiddleware,
+                    backend=BearerAuthBackend(
+                        provider=self._auth_server_provider,
+                    ),
+                ),
+                # Add the auth context middleware to store
+                # authenticated user in a contextvar
+                Middleware(AuthContextMiddleware),
+            ]
+            routes.extend(
+                create_auth_routes(
+                    provider=self._auth_server_provider,
+                    issuer_url=self.settings.auth.issuer_url,
+                    service_documentation_url=self.settings.auth.service_documentation_url,
+                    client_registration_options=self.settings.auth.client_registration_options,
+                    revocation_options=self.settings.auth.revocation_options,
+                )
+            )
+
+        # When auth is not configured, we shouldn't require auth
+        if self._auth_server_provider:
+            # Auth is enabled, wrap the endpoints with RequireAuthMiddleware
+            routes.append(
+                Route(
+                    self.settings.sse_path,
+                    endpoint=RequireAuthMiddleware(handle_sse, required_scopes),
+                    methods=["GET"],
+                )
+            )
+            routes.append(
+                Mount(
+                    self.settings.message_path,
+                    app=RequireAuthMiddleware(sse.handle_post_message, required_scopes),
+                )
+            )
+        else:
+            # Auth is disabled, no need for RequireAuthMiddleware
+            # Since handle_sse is an ASGI app, we need to create a compatible endpoint
+            async def sse_endpoint(request: Request) -> Response:
+                # Convert the Starlette request to ASGI parameters
+                return await handle_sse(request.scope, request.receive, request._send)  # type: ignore[reportPrivateUsage]
+
+            routes.append(
+                Route(
+                    self.settings.sse_path,
+                    endpoint=sse_endpoint,
+                    methods=["GET"],
+                )
+            )
+            routes.append(
+                Mount(
+                    self.settings.message_path,
+                    app=sse.handle_post_message,
+                )
+            )
+        # mount these routes last, so they have the lowest route matching precedence
+        routes.extend(self._custom_starlette_routes)
+
+        # Create Starlette app with routes and middleware
+        return Starlette(
+            debug=self.settings.debug, routes=routes, middleware=middleware
+        )
+
+    def streamable_http_app(self) -> Starlette:
+        """Return an instance of the StreamableHTTP server app."""
+        from starlette.middleware import Middleware
+        from starlette.routing import Mount
+
+        # Create session manager on first call (lazy initialization)
+        if self._session_manager is None:
+            self._session_manager = StreamableHTTPSessionManager(
+                app=self._mcp_server,
+                event_store=self._event_store,
+                json_response=self.settings.json_response,
+                stateless=self.settings.stateless_http,  # Use the stateless setting
+            )
+
+        # Create the ASGI handler
+        async def handle_streamable_http(
+            scope: Scope, receive: Receive, send: Send
+        ) -> None:
+            await self.session_manager.handle_request(scope, receive, send)
 
         # Create routes
-        routes: list[Route | Mount] = [
-            Route(self.settings.sse_path, endpoint=sse_endpoint),
-            Mount(self.settings.message_path, app=sse.handle_post_message),
-        ]
+        routes: list[Route | Mount] = []
+        middleware: list[Middleware] = []
+        required_scopes = []
 
-        # Add authentication middleware
-        middleware: list[Middleware] = [
-            Middleware(
-                AuthMiddleware,
-                auth_config=self.auth_config,
-            ),
-        ]
+        # Add auth endpoints if auth provider is configured
+        if self._auth_server_provider:
+            assert self.settings.auth
+            from mcp.server.auth.routes import create_auth_routes
 
-        # Create the base app
-        app = Starlette(
+            required_scopes = self.settings.auth.required_scopes or []
+
+            middleware = [
+                Middleware(
+                    AuthenticationMiddleware,
+                    backend=BearerAuthBackend(
+                        provider=self._auth_server_provider,
+                    ),
+                ),
+                Middleware(AuthContextMiddleware),
+            ]
+            routes.extend(
+                create_auth_routes(
+                    provider=self._auth_server_provider,
+                    issuer_url=self.settings.auth.issuer_url,
+                    service_documentation_url=self.settings.auth.service_documentation_url,
+                    client_registration_options=self.settings.auth.client_registration_options,
+                    revocation_options=self.settings.auth.revocation_options,
+                )
+            )
+            routes.append(
+                Mount(
+                    self.settings.streamable_http_path,
+                    app=RequireAuthMiddleware(handle_streamable_http, required_scopes),
+                )
+            )
+        else:
+            # Auth is disabled, no wrapper needed
+            routes.append(
+                Mount(
+                    self.settings.streamable_http_path,
+                    app=handle_streamable_http,
+                )
+            )
+
+        routes.extend(self._custom_starlette_routes)
+
+        return Starlette(
             debug=self.settings.debug,
             routes=routes,
             middleware=middleware,
+            lifespan=lambda app: self.session_manager.run(),
         )
 
-        return app
-
     def _registerSamplingHandler(self):
-        """
-        Register the handler for CreateMessageRequest.
-
-        This method sets up the request handler that will be called when
-        a client sends a CreateMessageRequest to the server. The handler
-        delegates the request processing to the registered sampling callback
-        and properly formats the response.
-
-        This is an internal method that is called during server initialization.
-        """
+        """Register the handler for CreateMessageRequest."""
 
         async def samplingHandler(req: types.CreateMessageRequest):
-            # Get the current request context from the MCP server
-            # This contains information about the client and the request
-            ctx = self._mcp_server.request_context
+            """Handle sampling/createMessage requests."""
 
-            # Extract message content for guardrail checks
-            if self.enable_guardrails and self.guardrail:
-                latest_message = (
-                    req.params.messages[-1] if req.params.messages else None
+            try:
+                # Get the current request context
+                ctx = self._mcp_server.request_context
+
+                # Process the request using the registered sampling callback
+                response = await self._samplingCallback(ctx, req.params)
+
+                # Return the response directly if it's an error, otherwise wrap it in a ServerResult
+                if isinstance(response, types.ErrorData):
+                    return response
+                else:
+                    return types.ServerResult(response)
+
+            except Exception as e:
+                logger.error(f"Error in sampling handler: {str(e)}")
+                return types.ErrorData(
+                    code=types.INTERNAL_ERROR,
+                    message=f"Error processing sampling request: {str(e)}",
                 )
-                if latest_message:
-                    message_content = ""
-                    if isinstance(latest_message.content, list):
-                        message_content = "".join(
-                            [
-                                content.text
-                                for content in latest_message.content
-                                if isinstance(content, types.TextContent)
-                            ]
-                        )
-                    elif isinstance(latest_message.content, types.TextContent):
-                        message_content = latest_message.content.text
 
-                    logger.debug(
-                        f"Running guardrail check on message: {message_content[:100]}..."
-                    )
-
-                    # Apply guardrail checks
-                    try:
-                        await self.guardrail.run(message_content)
-                    except GuardrailException as e:
-                        logger.warning(f"Guardrail blocked message: {str(e)}")
-                        return types.ErrorData(
-                            code=types.INVALID_REQUEST,
-                            message=f"Request blocked by guardrails: {str(e)}",
-                        )
-                    except Exception as e:
-                        logger.error(f"Error in guardrail check: {str(e)}")
-                        # Continue processing if guardrail fails for any reason
-
-            # Process the request using the registered sampling callback
-            # The callback is responsible for generating text based on the provided messages
-            response = await self._samplingCallback(ctx, req.params)
-
-            # Return the response directly if it's an error, otherwise wrap it in a ServerResult
-            # This ensures proper type handling in the MCP protocol
-            if isinstance(response, types.ErrorData):
-                return response
-            else:
-                return types.ServerResult(response)
-
-        # Register our handler to process CreateMessageRequest messages
-        # This makes the server respond to the "sampling/createMessage" method
-        self._mcp_server.request_handlers[types.CreateMessageRequest] = samplingHandler
+        # Register our handler for CreateMessageRequest type
+        self._mcp_server.request_handlers[CreateMessageRequest] = samplingHandler
 
     def sampling(self):
         """

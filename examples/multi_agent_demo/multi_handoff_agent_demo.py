@@ -24,9 +24,9 @@ Requirements:
     - agents package installed (pip install agents)
 """
 
-from hmcp.agent.multi_agent_handoff import MultiHandoffAgent
-from hmcp.shared.server_helper.server_helper import HMCPServerHelper
-from hmcp.agent.agent import HMCPAgent
+from multi_agent_handoff import MultiHandoffAgent
+from hmcp.client.client_connector import HMCPClientConnector
+from agent import HMCPAgent
 from agents.model_settings import ModelSettings
 from agents.run import RunConfig
 from agents.agent_output import AgentOutputSchema
@@ -92,11 +92,12 @@ async def create_emr_agent() -> HMCPAgent:
     """Create and initialize the EMR Writeback HMCP Agent."""
     logger.info("Creating EMR Writeback Agent")
 
-    # Create the HMCPServerHelper for the EMR Writeback Agent
-    emr_helper = HMCPServerHelper(host=HOST, port=EMR_PORT, debug=True)
+    # Create helper for EMR server
+    emr_helper = HMCPClientConnector(
+        url=f"http://{HOST}:{EMR_PORT}", debug=True)
 
     # Connect to the EMR server
-    await emr_helper.connect()
+    await emr_helper.connect(transport="streamable-http")
     logger.info(f"Connected to EMR server: {emr_helper.server_info['name']}")
 
     # Create the HMCPAgent wrapping the helper
@@ -120,11 +121,14 @@ async def create_patient_data_agent() -> HMCPAgent:
     """Create and initialize the Patient Data HMCP Agent."""
     logger.info("Creating Patient Data Agent")
 
-    # Create the HMCPServerHelper for the Patient Data Agent
-    patient_helper = HMCPServerHelper(host=HOST, port=PATIENT_PORT, debug=True)
+    # Create helper for patient data server
+    patient_helper = HMCPClientConnector(
+        url=f"http://{HOST}:{PATIENT_PORT}",
+        debug=True
+    )
 
     # Connect to the Patient Data server
-    await patient_helper.connect()
+    await patient_helper.connect(transport="streamable-http")
     logger.info(
         f"Connected to Patient Data server: {patient_helper.server_info['name']}"
     )
@@ -151,7 +155,8 @@ async def create_orchestrator_agent(
 ) -> Agent:
     """Create the main OpenAI agent that orchestrates the workflow."""
     if not OPENAI_API_KEY:
-        raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY in .env file.")
+        raise ValueError(
+            "OpenAI API key is required. Set OPENAI_API_KEY in .env file.")
 
     # Convert HMCP agents to standard agents for handoffs
     emr_standard_agent = emr_agent.to_agent()
@@ -197,7 +202,8 @@ async def run_multi_handoff_demo():
     logger.info("Starting Multi-Handoff Agent demo")
 
     if not OPENAI_API_KEY:
-        logger.error("OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
+        logger.error(
+            "OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
         print("\nERROR: OpenAI API key not found. Set OPENAI_API_KEY in .env file.")
         return
 

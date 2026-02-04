@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, TypeVar, Generic
 # Import from agents package
 from agents import Agent, Runner
 from agents.agent_output import AgentOutputSchema, AgentOutputSchemaBase
-from agents.guardrail import InputGuardrail, OutputGuardrail
+
 from agents.handoffs import Handoff
 from agents.model_settings import ModelSettings
 from agents.run import RunConfig
@@ -111,7 +111,8 @@ class MultiHandoffAgent(Generic[TContext]):
         )
 
         # Add the initial prompt to conversation history
-        self.conversation_history.append({"role": "user", "content": initial_prompt})
+        self.conversation_history.append(
+            {"role": "user", "content": initial_prompt})
 
         # Initialize context
         if context is None:
@@ -138,7 +139,8 @@ class MultiHandoffAgent(Generic[TContext]):
         while not objective_complete and iteration < self.max_iterations:
             # Increment the iteration counter
             iteration += 1
-            logger.info(f"Starting handoff iteration {iteration}/{self.max_iterations}")
+            logger.info(
+                f"Starting handoff iteration {iteration}/{self.max_iterations}")
 
             # Decide which handoff agent to call next
             decision = await self._decide_next_handoff(initial_prompt, result)
@@ -269,7 +271,8 @@ class MultiHandoffAgent(Generic[TContext]):
         )
 
         # Get available handoff agent names
-        available_agents = [handoff.name for handoff in self.base_agent.handoffs]
+        available_agents = [
+            handoff.name for handoff in self.base_agent.handoffs]
         available_agents_str = ", ".join(available_agents)
 
         decision_prompt = (
@@ -324,7 +327,8 @@ class MultiHandoffAgent(Generic[TContext]):
                 )
 
         # Default decision if parsing fails
-        logger.warning(f"Could not parse decision text. Using default next agent.")
+        logger.warning(
+            f"Could not parse decision text. Using default next agent.")
         default_agent = self._get_default_handoff_agent()
         return HandoffDecision(
             next_agent=default_agent.name if default_agent else None,
@@ -378,7 +382,8 @@ class MultiHandoffAgent(Generic[TContext]):
             if handoff.name == name:
                 return handoff
             elif (
-                handoff.name.replace(" ", "_").lower() in name.replace(" ", "_").lower()
+                handoff.name.replace(" ", "_").lower(
+                ) in name.replace(" ", "_").lower()
             ):
                 # Handle case where name might be formatted differently
                 # e.g., "EMR Writeback" vs "emr_writeback"
