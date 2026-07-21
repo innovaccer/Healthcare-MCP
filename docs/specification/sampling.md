@@ -37,7 +37,6 @@ To implement an HMCP server with bidirectional communication:
 
 ```python
 from hmcp.mcpserver.hmcp_server import HMCPServer
-from hmcp.mcpserver.guardrail import Guardrail
 
 # Initialize the server
 server = HMCPServer(
@@ -47,9 +46,6 @@ server = HMCPServer(
     port=8050,
     instructions="This agent provides healthcare information services."
 )
-
-# Optional: Initialize guardrail for security
-guardrail = Guardrail()
 ```
 
 2. **Register a sampling callback function:**
@@ -63,10 +59,7 @@ async def handle_sampling_requests(context, params):
     message_content = ""
     if isinstance(latest_message.content, types.TextContent):
         message_content = latest_message.content.text
-    
-    # Optional: Apply guardrails for security
-    await guardrail.run(message_content)
-    
+
     # Process the message and generate a response
     # ...custom processing logic...
     
@@ -205,19 +198,6 @@ HMCP uses JSON-RPC for message exchange. Below are examples of the actual JSON m
 }
 ```
 
-### Error Response (When Guardrails Block a Request)
-
-```json
-{
-  "jsonrpc": "2.0", 
-  "id": 3, 
-  "error": {
-    "code": -1, 
-    "message": "Request blocked by guardrails"
-  }
-}
-```
-
 ## Message Flow in a Multi-Agent System
 
 The following diagram depicts the message flow in a multi-agent healthcare scenario as implemented in the HMCP Demo:
@@ -262,28 +242,17 @@ sequenceDiagram
     Note over AI,Patient: Workflow completed
 ```
 
-## Security and Guardrails in Bidirectional Communication
+## Security in Bidirectional Communication
 
 Bidirectional communication introduces additional security concerns. HMCP addresses these with:
 
 1. **Authentication and Authorization**: All sampling requests require OAuth 2.0 authentication with appropriate scopes
-2. **Guardrails**: Automatic validation of all messages passing between agents to prevent prompt injection
-3. **Audit Logging**: Comprehensive logging of all communications for compliance requirements
+2. **Audit Logging**: Comprehensive logging of all communications for compliance requirements
 
-Example of a sampling request blocked by guardrails:
-
-```mermaid
-sequenceDiagram
-    participant AI as AI Agent
-    participant Guard as Guardrail System
-    participant HMCP as HMCP Server
-    
-    AI->>HMCP: Sampling request with prompt injection attempt
-    HMCP->>Guard: Check request against guardrails
-    Guard--xHMCP: Block request (contains "system prompt")
-    HMCP--xAI: Return GuardrailException
-    Note right of AI: Request blocked for security reasons
-```
+Input validation, prompt-injection defence, and other content-level controls
+are intentionally **out of scope** for HMCP itself — those policies belong in
+a model-agnostic layer (e.g. the calling agent's own moderation pipeline or a
+network-level gateway), not inside the protocol.
 
 ## Use Cases for Bidirectional Agent Communication
 

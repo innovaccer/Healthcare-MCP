@@ -1,6 +1,6 @@
 [project]
 name = "hmcp"
-version = "0.0.4"
+version = "0.0.5"
 description = "Healthcare MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,15 +8,11 @@ authors = [{ name = "Innovaccer" }]
 dependencies = [
     "asyncio>=3.4.3",
     "mcp-use>=1.2.7",
-    "mcp[cli]==1.26.0",
+    "mcp[cli]==1.29.0",
     "nest-asyncio>=1.6.0",
     "uvicorn==0.34.3",
     "starlette==0.49.1",
     "cryptography>=41.0.0",
-    "aiohttp>=3.8.0",
-    "PyJWT>=2.8.0",
-    "python-jose>=3.3.0",
-    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +24,12 @@ dev = [
     "black==25.1.0"
 ]
 
+
+[tool.black]
+# Pin the target so formatting is identical across black versions. Without it,
+# black infers targets from the open-ended `requires-python = ">=3.11"` and a
+# newer black may reformat for unreleased Python versions.
+target-version = ["py311"]
 
 [build-system]
 requires = ["hatchling"]

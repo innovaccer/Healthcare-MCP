@@ -405,12 +405,16 @@ async def test_client_connector_streamable_http_with_auth():
     
     with patch('hmcp.client.client_connector.streamable_http_client') as mock_http_client, \
          patch('hmcp.client.client_connector.ClientSession') as mock_session_class, \
-         patch('hmcp.client.client_connector.httpx.AsyncClient'), \
+         patch('hmcp.client.client_connector.httpx.AsyncClient') as mock_httpx, \
          patch.object(connector.oauth_client, 'set_client_credentials_token', new_callable=AsyncMock) as mock_set_token, \
-         patch.object(connector.oauth_client, 'get_auth_header', return_value={"Authorization": "Bearer test-token"}), \
-         patch.object(connector.oauth_client, '__aenter__', new_callable=AsyncMock), \
-         patch.object(connector.oauth_client, '__aexit__', new_callable=AsyncMock):
-        
+         patch.object(connector.oauth_client, 'get_auth_header', return_value={"Authorization": "Bearer test-token"}):
+
+        # OAuthClient's real async-CM lifecycle runs here: `async with` resolves
+        # __aenter__/__aexit__ on the type, so instance-level patches wouldn't
+        # apply. __aexit__ awaits self._http.aclose(), so the mocked httpx
+        # client needs an awaitable aclose or the context exit raises TypeError.
+        mock_httpx.return_value.aclose = AsyncMock()
+
         # Mock streamable http client
         mock_read = AsyncMock()
         mock_write = AsyncMock()
