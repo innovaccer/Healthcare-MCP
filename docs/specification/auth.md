@@ -88,7 +88,7 @@ For patient-specific operations, HMCP supports patient-context scopes. When usin
 
 1. The client requests both the resource scope with the `patient/` prefix and the `launch/patient` scope
 2. The authorization server includes a `patient` parameter in the token response containing the patient ID
-3. All operations using that token are automatically restricted to the specified patient
+3. A conforming server MUST automatically restrict all operations using that token to the specified patient
 
 ## OpenID Connect Integration
 

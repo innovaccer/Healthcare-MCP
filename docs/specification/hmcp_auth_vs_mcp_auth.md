@@ -24,7 +24,7 @@ Below are the key differences between HMCP authentication and MCP authentication
 
 ## 5. Patient Context
 - **MCP**: No patient context mechanism defined
-- **HMCP**: Features extensive patient context support:
+- **HMCP**: Specifies extensive patient context support (specified; SDK support pending):
   - Patient-prefixed scopes (e.g., `patient/hmcp:read`)
   - Patient parameter in token responses
   - Integration with FHIR resources
@@ -47,4 +47,4 @@ Below are the key differences between HMCP authentication and MCP authentication
 - **MCP**: General OAuth 2.1 security best practices
 - **HMCP**: Additional healthcare-specific security guidance tailored to protected health information
 
-The HMCP implementation represents a specialized adaptation of authentication standards focused on healthcare use cases, while the base MCP specification provides a more general-purpose authentication framework. HMCP adds significant healthcare-specific functionality, particularly around patient context handling and integration with FHIR resources.
+The HMCP implementation represents a specialized adaptation of authentication standards focused on healthcare use cases, while the base MCP specification provides a more general-purpose authentication framework. HMCP adds significant healthcare-specific functionality, particularly around patient context handling and integration with FHIR resources (patient context is specified but not yet implemented in the SDK).

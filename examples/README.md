@@ -12,7 +12,7 @@ Healthcare Model Context Protocol (HMCP) examples demonstrating various capabili
 
 ## Features
 - Bidirectional communication
-- Authentication and Authorization
+- Authentication and Authorization (available in the SDK, but the examples run unauthenticated in demo mode)
 
 ## Available Examples
 - **Basic HMCP Demo**: Demonstrates core HMCP communication features
@@ -22,9 +22,14 @@ Healthcare Model Context Protocol (HMCP) examples demonstrating various capabili
 ## How to Run the Demo
 
 ```bash
-# Temporary steps till the package isn't published:
-pip install hatch
-hatch build
+# Temporary steps until the package is published.
+# Install the hmcp package from the repo root (Python 3.11 or newer required):
+pip install .
+
+# ...or build a wheel and install that
+# (the wheel filename tracks the project version)
+#   pip install hatch && hatch build
+#   pip install dist/hmcp-0.0.6-py3-none-any.whl
 
 # Actual steps:
 cd examples
@@ -38,15 +43,15 @@ OPENAI_API_KEY=<your-openai-api-key>  # provide your openai api key here
 
 # START EMR MCP server
 # Open a new terminal and execute below commands
-python hmcp_demo.py --emr-server
+python hmcp_llm_demo.py --emr-server
 
 # START PATIENT data MCP server
 # Open a new terminal and execute below commands
-python hmcp_demo.py --patient-data-server
+python hmcp_llm_demo.py --patient-data-server
 
 # Run the DEMO using client server with SSE transport (recommended)
 # Open a new terminal and execute below commands
-python hmcp_demo.py
+python hmcp_llm_demo.py
 ```
 
 ## HMCP Demo Workflow
@@ -246,7 +251,7 @@ python hmcp_llm_demo.py --emr-server
 python hmcp_llm_demo.py --patient-data-server
 
 # Run the multi-agent handoff demo
-python multi_handoff_agent_demo.py
+python multi_agent_demo/multi_handoff_agent_demo.py
 ```
 
 ## Technical Implementation Details
@@ -255,5 +260,5 @@ python multi_handoff_agent_demo.py
 - Implements conversation history management for each agent
 - Provides specialized system prompts for each agent type
 - Uses SSE (Server-Sent Events) for communication
-- Implements JWT-based authentication between agents
+- Runs unauthenticated in demo mode (no credentials are wired); production deployments should configure OAuth 2.0 via the SDK's `auth_server_provider`
 - Includes comprehensive error handling and logging

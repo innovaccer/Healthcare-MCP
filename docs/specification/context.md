@@ -1,10 +1,12 @@
 # Sharing Patient Context
 
-HMCP implements patient context sharing based on SMART on FHIR specifications, ensuring healthcare AI agents maintain proper patient context isolation and security.
+> **Status:** This page specifies the HMCP patient-context model. The HMCP SDK does **not** implement it yet — `src/hmcp/README.md` tracks patient context as a To-Do. Statements below describe required behaviour for a conforming implementation, not shipped functionality.
+
+HMCP specifies patient context sharing based on SMART on FHIR specifications, ensuring healthcare AI agents maintain proper patient context isolation and security.
 
 ## Patient Context Methods
 
-HMCP supports these patient context methods:
+A conforming HMCP implementation supports these patient context methods:
 
 ### 1. OAuth 2.0 Scope-Based Patient Context
 
@@ -32,7 +34,7 @@ The authorization server's token response includes:
 }
 ```
 
-All API requests using this token automatically restrict operations to the specified patient.
+A conforming server MUST automatically restrict all API requests using this token to the specified patient.
 
 ### 2. JWT Claims for Patient Context
 
@@ -50,7 +52,7 @@ When using JWT access tokens, patient context is embedded as claims:
 }
 ```
 
-The server extracts and enforces the patient context without requiring additional parameters in each API call.
+A conforming server MUST extract and enforce the patient context without requiring additional parameters in each API call.
 
 ### 3. HTTP Headers (For backwards compatibility)
 
@@ -66,11 +68,11 @@ This method is less secure and recommended only for transition scenarios.
 
 ## Context Synchronization
 
-HMCP provides mechanisms to ensure consistent patient context across multiple agents or services:
+A conforming HMCP implementation provides mechanisms to ensure consistent patient context across multiple agents or services:
 
-1. **Context propagation**: When an HMCP server forwards requests to other services, patient context is preserved
-2. **Context validation**: Servers validate that patient context matches across related operations
-3. **Patient switching**: Clear protocols for changing patient context within a session
+1. **Context propagation**: When an HMCP server forwards requests to other services, patient context MUST be preserved
+2. **Context validation**: Servers MUST validate that patient context matches across related operations
+3. **Patient switching**: Changing patient context within a session requires a clear protocol, which is expected to be defined by the implementation
 
 ## Implementation Guidelines
 
@@ -90,4 +92,4 @@ Patient context should be treated with the same security considerations as authe
 4. Prevent elevation of privilege through patient context manipulation
 5. Audit all patient context changes
 
-By combining scope-based authorization with per-request patient context in tokens, HMCP provides a robust, secure mechanism for patient data isolation and appropriate access control.
+By combining scope-based authorization with per-request patient context in tokens, a conforming implementation provides a robust, secure mechanism for patient data isolation and appropriate access control.

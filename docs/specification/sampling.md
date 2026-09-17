@@ -36,7 +36,7 @@ To implement an HMCP server with bidirectional communication:
 1. **Create an HMCPServer instance:**
 
 ```python
-from hmcp.mcpserver.hmcp_server import HMCPServer
+from hmcp.server.hmcp_server import HMCPServer
 
 # Initialize the server
 server = HMCPServer(
@@ -88,7 +88,7 @@ To communicate with an HMCP server that supports sampling:
 1. **Connect to the server:**
 
 ```python
-from hmcp.mcpclient.hmcp_client import HMCPClient
+from hmcp.client.hmcp_client import HMCPClient
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.types import SamplingMessage, TextContent
@@ -244,10 +244,10 @@ sequenceDiagram
 
 ## Security in Bidirectional Communication
 
-Bidirectional communication introduces additional security concerns. HMCP addresses these with:
+Bidirectional communication introduces additional security concerns. A conforming HMCP deployment is expected to address these as follows:
 
-1. **Authentication and Authorization**: All sampling requests require OAuth 2.0 authentication with appropriate scopes
-2. **Audit Logging**: Comprehensive logging of all communications for compliance requirements
+1. **Authentication and Authorization**: A conforming deployment requires OAuth 2.0 authentication with appropriate scopes on sampling requests. The SDK can enforce this at the transport layer via `RequireAuthMiddleware`, but **only when the server is constructed with an `auth_server_provider`**; that argument defaults to `None`, and with no provider configured no authentication is enforced. Authentication is therefore opt-in, not enabled by default.
+2. **Audit Logging**: The protocol expects deployments to maintain comprehensive audit trails of all communications for compliance requirements. The SDK does **not** provide audit logging itself.
 
 Input validation, prompt-injection defence, and other content-level controls
 are intentionally **out of scope** for HMCP itself — those policies belong in

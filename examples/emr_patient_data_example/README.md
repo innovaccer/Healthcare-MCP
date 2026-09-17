@@ -30,17 +30,17 @@ This example demonstrates integration between an EMR system and patient data ser
 
 1. Start the EMR server in a terminal:
    ```bash
-   python examples/emr_patientdata_example/run_standalone_emr_server.py
+   python examples/emr_patient_data_example/run_standalone_emr_server.py
    ```
 
 2. Start the Patient Data server in another terminal:
    ```bash
-   python examples/emr_patientdata_example/run_standalone_patient_data_server.py
+   python examples/emr_patient_data_example/run_standalone_patient_data_server.py
    ```
 
 3. Run the client to test the integration:
    ```bash
-   python examples/emr_patientdata_example/hmcp_client_standalone_connection.py
+   python examples/emr_patient_data_example/hmcp_client_standalone_connection.py
    ```
 
 ## What to Expect

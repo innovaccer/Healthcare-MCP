@@ -6,7 +6,7 @@
 
 HMCP SDK builds on top of [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), where we implemented the [HMCP specification](../../docs/specification/index.md).
 
-- Authentication, Authorization & Scopes - Implemented
+- Authentication, Authorization & Scopes - Implemented *(server-side enforcement is opt-in: pass `auth_server_provider`; default is `None`)*
 - Patient Context - To-Do
 
 - Agent to Agent communication - Implemented
@@ -15,10 +15,19 @@ HMCP SDK builds on top of [MCP Python SDK](https://github.com/modelcontextprotoc
 
 ### Adding HMCP to your python project
 
+Python 3.11 or newer is required.
+
 ```bash
-# Temporary steps till the package isn't published:
+# Temporary steps until the package is published:
+
+# Install from a local checkout
+pip install .
+
+# ...or build a wheel and install that
+# (the wheel filename tracks the project version)
 pip install hatch
 hatch build
+pip install dist/hmcp-0.0.6-py3-none-any.whl
 ```
 
 ## Usage
@@ -28,7 +37,7 @@ hatch build
 You can create an HMCP-compliant server using the `HMCPServer` class:
 
 ```python
-from hmcp.mcpserver.hmcp_server import HMCPServer
+from hmcp.server.hmcp_server import HMCPServer
 
 from mcp.shared.context import RequestContext
 import mcp.types as types
@@ -124,7 +133,7 @@ asyncio.run(connect_to_hmcp_server())
 
 ### Agent to Agent Communication Example
 
-See the `examples/hmcp_demo.py` file for a complete example of multi-agent communication using HMCP. The demo implements a clinical data workflow with three agents:
+See the `examples/hmcp_llm_demo.py` file for a complete example of multi-agent communication using HMCP. The demo implements a clinical data workflow with three agents:
 
 1. AI Agent - Central agent that orchestrates the workflow
 2. EMR Writeback Agent - Agent that handles writing to electronic medical records
@@ -157,7 +166,7 @@ pytest --cov=hmcp
 pytest -v
 
 # Run specific test file
-pytest tests/test_specific_file.py
+pytest tests/hmcp/server/test_hmcp_server.py
 
 # Run tests matching a specific pattern
 pytest -k "test_pattern"

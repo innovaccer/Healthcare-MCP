@@ -8,7 +8,6 @@ Healthcare is rapidly embracing an AI-driven future. From ambient clinical docum
 
 At Innovaccer, we are proud to launch the Healthcare Model Context Protocol (HMCP). HMCP is a specialized extension of the Model Context Protocol (MCP) specifically crafted to integrate healthcare AI agents with data, tools, and workflows, all within a secure, compliant, and standards-based framework.
 
-
 ## Overview & Motivation
 
 ### Overview
@@ -18,16 +17,19 @@ MCP Model Context Protocol was created by Anthropic to allow host agentic applic
 
 Healthcare demands precision and accountability. AI agents operating within this domain must handle sensitive patient data securely, adhere to rigorous compliance regulations, and maintain consistent interoperability across diverse clinical workflows. Standard, generalized protocols fall short. That is why we developed HMCP.
 
-Built upon the robust foundation of open source MCP (Model Context Protocol), HMCP introduces essential healthcare-specific capabilities by leveraging industry standard controls (OAuth 2.0, OpenID Connect following SMART on FHIR, Data Segregation & Encryption, Audit trails, Rate Limiting & Risk Assessment, etc.), to achieve:
-- HIPAA-compliant security and access management
-- Comprehensive logging and auditing of agent activities
-- Separation and protection of patient identities
-- Bidirectional agent-to-agent communication via sampling endpoints
-- Support for both SSE and streamable-http transports
+Built upon the robust foundation of open source MCP (Model Context Protocol), HMCP is designed around industry standard controls (OAuth 2.0, OpenID Connect following SMART on FHIR, Data Segregation & Encryption, Audit trails, Rate Limiting & Risk Assessment, etc.) to introduce essential healthcare-specific capabilities and achieve:
+- HIPAA-compliant security and access management *(partially implemented — opt-in OAuth 2.0 / OIDC authentication only; encryption, audit logging and rate limiting are not yet implemented)*
+- Comprehensive logging and auditing of agent activities *(specified; not yet implemented)*
+- Separation and protection of patient identities *(specified; not yet implemented — see [Patient Context](docs/specification/context.md))*
+- Bidirectional agent-to-agent communication via sampling endpoints *(implemented)*
+- Support for both SSE and streamable-http transports *(implemented; `stdio` is also supported and is the default)*
 - Facilitation of secure, compliant collaboration between multiple AI agents
 
 These enhancements are being designed to ensure that HMCP can meet the unique regulatory, security, and operational needs of healthcare environments.
 
+#### Implementation status
+
+The list above describes the intended scope of the HMCP protocol and roadmap; individual items are annotated with their current SDK status where applicable. For the authoritative per-feature status, see the [SDK implementation status](src/hmcp/README.md).
 
 **_Think of HMCP as the "universal connector" for healthcare AI—a trusted, standardized way to ensure seamless interoperability._**
 
@@ -37,10 +39,19 @@ These enhancements are being designed to ensure that HMCP can meet the unique re
 
 ### Installing HMCP
 
+Python 3.11 or newer is required.
+
 ```bash
-# Temporary steps till the package isn't published:
+# Temporary steps until the package is published:
+
+# Install from a local checkout
+pip install .
+
+# ...or build a wheel and install that
+# (the wheel filename tracks the project version)
 pip install hatch
 hatch build
+pip install dist/hmcp-0.0.6-py3-none-any.whl
 ```
 
 ### Creating an HMCP Server
@@ -77,7 +88,7 @@ async def handle_sampling(context, params):
         stopReason="endTurn"
     )
 
-# Start the server (supports both 'sse' and 'streamable-http' transports)
+# Start the server ('stdio' (default), 'sse' or 'streamable-http')
 server.run(transport="streamable-http")
 ```
 
@@ -109,7 +120,7 @@ async def connect_to_agent():
         
         # List available tools
         tools = await client.list_tools()
-        print(f"Available tools: {[tool['name'] for tool in tools]}")
+        print(f"Available tools: {[tool.name for tool in tools]}")
         
     finally:
         # Clean up connection
@@ -165,17 +176,20 @@ For more detailed examples and advanced usage, see the [HMCP SDK documentation](
 
 ## Key Features
 
-### Dual Transport Support
-HMCP supports both SSE (Server-Sent Events) and streamable-http transports for flexibility in different deployment scenarios:
-- **SSE**: Traditional long-polling approach, ideal for real-time updates
+### Transport Support
+HMCP supports the following transports for flexibility in different deployment scenarios:
+- **stdio**: Standard input/output transport; the default, ideal for local and subprocess use
+- **SSE**: Server-to-client messages arrive over a single long-lived SSE (server-push) stream, while client-to-server messages are sent via an HTTP POST endpoint, making the transport bidirectional in effect, ideal for real-time updates
 - **streamable-http**: Modern HTTP-based streaming, better firewall compatibility
 
+`stdio` applies to the server (suited to local and subprocess use); `HMCPClientConnector` connects over `sse` or `streamable-http`.
+
 ### OAuth 2.0 Authentication
-Built-in OAuth 2.0 support following SMART on FHIR specifications:
+OAuth 2.0 client support following SMART on FHIR specifications (the server enforces authentication only when constructed with an `auth_server_provider`; the default is `None`):
 - Client credentials flow for server-to-server communication
 - Authorization code flow with PKCE for user-facing applications
-- Patient-scoped access tokens for data segregation
-- Token introspection and revocation
+- Patient-scoped access tokens for data segregation *(specified; not yet implemented — see [Patient Context](docs/specification/context.md))*
+- Token revocation
 
 See [OAuth Client Documentation](./src/hmcp/shared/auth/oauth_client_README.md) for detailed usage.
 

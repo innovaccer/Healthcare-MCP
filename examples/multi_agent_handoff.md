@@ -16,7 +16,7 @@ The architecture consists of the following key components:
 - **MultiHandoffAgent**: The core coordinator that manages agent handoffs
 - **Orchestrator Agent**: The main agent that decides which specialized agent to call
 - **Specialized HMCP Agents**: Domain-specific agents (e.g., EMR system, patient data)
-- **HMCPServerHelper**: Provides communication with HMCP servers
+- **HMCPClientConnector**: Provides communication with HMCP servers
 - **HMCPModel**: Integration with the Agents framework model interface
 
 ## Architecture Diagram
@@ -33,8 +33,8 @@ graph TD
     EMR --> HCPE[HMCPModel EMR]
     PDA --> HCPP[HMCPModel Patient Data]
     
-    HCPE --> EMRH[HMCPServerHelper]
-    HCPP --> PDAH[HMCPServerHelper]
+    HCPE --> EMRH[HMCPClientConnector]
+    HCPP --> PDAH[HMCPClientConnector]
     
     EMRH --> |auth + connection| EMRS[EMR HMCP Server]
     PDAH --> |auth + connection| PDAS[Patient Data HMCP Server]
@@ -135,7 +135,7 @@ Key methods:
 
 ### HMCPAgent
 
-The `HMCPAgent` class wraps an `HMCPServerHelper` to integrate HMCP servers with the agent framework. It:
+The `HMCPAgent` class wraps an `HMCPClientConnector` to integrate HMCP servers with the agent framework. It:
 
 1. Handles communication with HMCP servers
 2. Processes messages using the server's sampling capabilities
@@ -146,7 +146,7 @@ It exposes several methods:
 - `cleanup()`: Properly closes connections
 - `as_tool()`: Exposes the agent as a tool
 
-### HMCPServerHelper
+### HMCPClientConnector
 
 This helper class facilitates connection to HMCP servers handling:
 
@@ -197,10 +197,8 @@ For a task like "Update John Smith's clinical record with new information":
 
 The multi-agent handoff architecture integrates with HMCP through:
 
-1. Authentication using JWT tokens with the proper scopes
-2. Bidirectional sampling for agent-to-agent communication
-3. Security guardrails to prevent prompt injections
-4. Proper error handling and resource cleanup
+1. Bidirectional sampling for agent-to-agent communication
+2. Proper error handling and resource cleanup
 
 ## Error Handling and Recovery
 

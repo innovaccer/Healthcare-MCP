@@ -3,7 +3,6 @@
 Healthcare Model Context Protocol (HMCP) expands on base [MCP](https://modelcontextprotocol.io/specification/2025-03-26) by adding the below enhancements:
 
 - [Authentication \& Scopes](#authentication--scopes)
-- [Guardrails](#guardrails)
 - [Patient Context](#patient-context)
 - [Bi-directional agent to agent communication](#bi-directional-agent-to-agent-communication)
  
@@ -20,15 +19,9 @@ For detailed implementation examples and flows, see the [Authentication Implemen
 
 ### [Comparison of MCP vs HMCP Authentication](./hmcp_auth_vs_mcp_auth.md)
 
-## Guardrails
-
-Guardrails are an important differentiator of the HMCP protocol. We define guardrails as part of the `experimental` capabilities of client and server. You can configure the exact guardrail which needs to be executed for each input/output of the server agent.
-
-[Guardrails](./guardrails.md)
-
 ## Patient Context
 
-HMCP implements patient context sharing based on SMART on FHIR specifications, ensuring healthcare AI agents maintain proper patient context isolation and security. 
+HMCP **specifies** patient context sharing based on SMART on FHIR specifications, ensuring healthcare AI agents maintain proper patient context isolation and security. SDK support for it is pending. 
 
 [Patient Context Sharing](./context.md)
 

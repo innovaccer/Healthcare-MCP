@@ -2,7 +2,7 @@
 """
 HMCP Server Helper Demo
 
-This script demonstrates how to use the HMCPServerHelper class to interact with HMCP servers.
+This script demonstrates how to use the HMCPClientConnector class to interact with HMCP servers.
 It connects to both the EMR Writeback Agent and Patient Data Access Agent from the hmcp_llm_demo.py
 example, and shows how to use the helper functions to send messages, call tools, and work with
 resources in a simplified way.
@@ -109,7 +109,7 @@ async def run_patient_demo(host: str, port: int) -> None:
 
 async def main():
     """
-    Main demo function that demonstrates HMCPServerHelper usage with both
+    Main demo function that demonstrates HMCPClientConnector usage with both
     EMR Writeback and Patient Data Access agents.
     """
     logger.info("Starting HMCP Server Helper Demo")

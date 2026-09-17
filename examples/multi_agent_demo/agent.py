@@ -1,7 +1,7 @@
 """
 HMCP Agent: Agent implementation for Healthcare Model Context Protocol servers
 
-This module provides an Agent class that works with HMCPServerHelper to create
+This module provides an Agent class that works with HMCPClientConnector to create
 agents that can be used for handoffs in multi-agent workflows. It integrates with
 the existing agents framework to enable seamless interactions between OpenAI agents
 and HMCP servers.
@@ -50,7 +50,7 @@ from agents.logger import logger
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 
-# Import HMCPServerHelper
+# Import HMCPClientConnector
 from hmcp.client.client_connector import HMCPClientConnector
 
 # Create a generic type variable for the context
@@ -245,7 +245,7 @@ class HMCPModel(Model):
 @dataclass
 class HMCPAgent(Generic[TContext]):
     """
-    An agent that wraps an HMCPServerHelper to integrate with the agents framework.
+    An agent that wraps an HMCPClientConnector to integrate with the agents framework.
 
     This agent allows HMCP servers with sampling capability to be used within multi-agent
     workflows, including handoffs between different agents.
