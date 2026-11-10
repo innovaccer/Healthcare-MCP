@@ -187,6 +187,7 @@ The [examples](examples/) directory holds runnable, synthetic-data examples:
 
 - **`ehr_patient_context`:** a demo EHR server and client that open a patient context and call a patient-scoped tool.
 - **`custom_guardrails`:** writing and registering custom guardrail definitions.
+- **`gravity_guardrails`:** classifier (SLM) guardrails backed by Gravity guardrail configs, with an offline stand-in for the Gravity service.
 - **`quickstart`:** a minimal end-to-end server and client.
 
 ## Security and compliance

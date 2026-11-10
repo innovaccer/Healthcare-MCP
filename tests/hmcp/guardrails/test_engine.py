@@ -1,6 +1,7 @@
 """Tests for the guardrail runtime engine. No network."""
 
 import asyncio
+import copy
 import json
 import logging
 import types
@@ -19,6 +20,7 @@ from hmcp.shared.guardrails.definition import (
     ActionSpec,
     BuiltinEvaluatorSpec,
     CascadeEvaluatorSpec,
+    ClassifierEvaluatorSpec,
     DeidEvaluatorSpec,
     GuardrailDefinition,
     IdentifierType,
@@ -32,6 +34,7 @@ from hmcp.shared.guardrails.engine import (
     build_evaluator,
 )
 from hmcp.shared.guardrails.evaluators.base import EvaluationContext, TextUnit
+from hmcp.shared.guardrails.evaluators.classifier import ClassifierEvaluator
 from hmcp.shared.guardrails.findings import Finding, locate_all, redact
 from hmcp.shared.guardrails.reference import PHI_IDENTIFIER_TYPES, phi_deidentification
 from hmcp.shared.guardrails.vault import InMemoryMarkerVault
@@ -1122,3 +1125,128 @@ def test_pseudonymize_output_timeout_is_error(caplog):
     assert entry.verdict is GuardrailVerdict.ERROR
     assert entry.findings == 0
     assert new_result is original
+
+
+# --- classifier evaluator --------------------------------------------------
+
+
+class RecordingClassifier:
+    """A fake classifier provider that records the requests it is given."""
+
+    def __init__(self, *, flagged=False, raises=False):
+        self._flagged = flagged
+        self._raises = raises
+        self.requests = []
+
+    async def classify(self, request):
+        self.requests.append(request)
+        if self._raises:
+            raise RuntimeError("classifier down")
+        return {"flagged": self._flagged}
+
+
+def _classifier_definition(*, stages=("input",), action="block"):
+    return GuardrailDefinition(
+        id="com.example.test/classifier-check",
+        version="1.0.0",
+        title="test classifier guardrail",
+        stages=stages,
+        evaluator=ClassifierEvaluatorSpec(kind="classifier", classifier="toxicity"),
+        action=ActionSpec(on_finding=action),
+    )
+
+
+def test_build_evaluator_classifier_without_provider_raises():
+    spec = ClassifierEvaluatorSpec(kind="classifier", classifier="toxicity")
+    with pytest.raises(
+        ValueError, match="classifier evaluator requires a classifier provider"
+    ):
+        build_evaluator(spec, llm=None, deid=None)
+
+
+def test_build_evaluator_classifier_with_provider_returns_evaluator():
+    spec = ClassifierEvaluatorSpec(kind="classifier", classifier="toxicity")
+    evaluator = build_evaluator(
+        spec, llm=None, deid=None, classifier=RecordingClassifier()
+    )
+    assert isinstance(evaluator, ClassifierEvaluator)
+    assert evaluator.kind == "classifier"
+
+
+def test_classifier_input_flagged_blocks():
+    provider = RecordingClassifier(flagged=True)
+    runtime = GuardrailRuntime(
+        _classifier_definition(stages=("input",), action="block"),
+        classifier=provider,
+        vault=InMemoryMarkerVault(),
+    )
+
+    entry = asyncio.run(runtime.run_input({"note": "hello"}, _ctx()))
+
+    assert entry.verdict is GuardrailVerdict.BLOCKED
+    assert entry.findings == 1
+    assert entry.evaluator == "classifier"
+    assert provider.requests
+    assert all(request.stage == "input" for request in provider.requests)
+
+
+def test_classifier_input_annotate_leaves_arguments_unchanged():
+    provider = RecordingClassifier(flagged=True)
+    runtime = GuardrailRuntime(
+        _classifier_definition(stages=("input",), action="annotate"),
+        classifier=provider,
+        vault=InMemoryMarkerVault(),
+    )
+    arguments = {"note": "hello", "nested": {"mrn": 123456}}
+    before = copy.deepcopy(arguments)
+
+    entry = asyncio.run(runtime.run_input(arguments, _ctx()))
+
+    assert entry.verdict is GuardrailVerdict.ANNOTATED
+    assert arguments == before
+
+
+def test_classifier_not_flagged_passes():
+    provider = RecordingClassifier(flagged=False)
+    runtime = GuardrailRuntime(
+        _classifier_definition(stages=("input",), action="block"),
+        classifier=provider,
+        vault=InMemoryMarkerVault(),
+    )
+
+    entry = asyncio.run(runtime.run_input({"note": "hello"}, _ctx()))
+
+    assert entry.verdict is GuardrailVerdict.PASS
+    assert entry.findings == 0
+
+
+def test_classifier_provider_error_is_error():
+    provider = RecordingClassifier(raises=True)
+    runtime = GuardrailRuntime(
+        _classifier_definition(stages=("input",), action="block"),
+        classifier=provider,
+        vault=InMemoryMarkerVault(),
+    )
+
+    entry = asyncio.run(runtime.run_input({"note": "hello"}, _ctx()))
+
+    assert entry.verdict is GuardrailVerdict.ERROR
+    assert entry.findings == 0
+
+
+def test_classifier_output_flagged_blocks():
+    provider = RecordingClassifier(flagged=True)
+    runtime = GuardrailRuntime(
+        _classifier_definition(stages=("output",), action="block"),
+        classifier=provider,
+        vault=InMemoryMarkerVault(),
+    )
+    original = CallToolResult(
+        content=[TextContent(type="text", text="flagged text")], is_error=False
+    )
+
+    new_result, entry = asyncio.run(runtime.run_output(original, _ctx(stage="output")))
+
+    assert entry.verdict is GuardrailVerdict.BLOCKED
+    assert provider.requests
+    assert all(request.stage == "output" for request in provider.requests)

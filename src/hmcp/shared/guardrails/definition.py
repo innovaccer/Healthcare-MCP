@@ -129,6 +129,15 @@ class DeidEvaluatorSpec(Model):
     categories: tuple[PhiCategory, ...] = ()
 
 
+class ClassifierEvaluatorSpec(Model):
+    """Spec for a text-classifier evaluator, for example a small language model (SLM)."""
+
+    kind: Literal["classifier"]
+    # Deployer-scoped name of the classifier; the ClassifierProvider maps it to a model or service.
+    classifier: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$", max_length=128)
+    max_chars_per_call: int = Field(default=12000, ge=500, le=200000)
+
+
 class BuiltinEvaluatorSpec(Model):
     """Spec for an HMCP builtin evaluator (context consistency or placeholder)."""
 
@@ -154,6 +163,7 @@ EvaluatorSpec = Annotated[
     PatternEvaluatorSpec
     | PromptEvaluatorSpec
     | DeidEvaluatorSpec
+    | ClassifierEvaluatorSpec
     | BuiltinEvaluatorSpec
     | CascadeEvaluatorSpec,
     Field(discriminator="kind"),
@@ -216,6 +226,12 @@ class GuardrailDefinition(Model):
             and self.action.on_finding != "block"
         ):
             raise ValueError("builtin evaluators require action.onFinding 'block'")
+        if isinstance(self.evaluator, ClassifierEvaluatorSpec) and (
+            self.action.on_finding not in ("block", "annotate")
+        ):
+            raise ValueError(
+                "classifier evaluators require action.onFinding 'block' or 'annotate'"
+            )
         if self.action.on_finding == "pseudonymize" and "output" not in self.stages:
             raise ValueError("pseudonymize requires the 'output' stage")
         return self

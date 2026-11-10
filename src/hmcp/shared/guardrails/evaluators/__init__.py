@@ -2,6 +2,12 @@
 
 from .base import EvaluationContext, EvaluationError, Evaluator, TextUnit
 from .builtin import PatientContextConsistencyEvaluator, RedactionPlaceholderEvaluator
+from .classifier import (
+    ClassificationRequest,
+    ClassificationResult,
+    ClassifierEvaluator,
+    ClassifierProvider,
+)
 from .deid import (
     DeidEntity,
     DeidEntityDetection,
@@ -23,6 +29,10 @@ __all__ = [
     "PatientContextConsistencyEvaluator",
     "RedactionPlaceholderEvaluator",
     "PatternEvaluator",
+    "ClassificationRequest",
+    "ClassificationResult",
+    "ClassifierEvaluator",
+    "ClassifierProvider",
     "DeidEntity",
     "DeidEntityDetection",
     "DeidEntityLocation",

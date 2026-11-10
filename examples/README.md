@@ -28,6 +28,7 @@ Runnable examples for HMCP 0.1.0. Every example uses synthetic data only.
 | [`quickstart/`](quickstart/README.md) | A minimal end-to-end server and client that opens a patient context and calls one patient-scoped tool. |
 | [`ehr_patient_context/`](ehr_patient_context/README.md) | A runnable, LLM-free demo of the two HMCP 0.1.0 extensions: **patient context** (a server-minted handle the host opens and every patient-scoped tool must carry) and **guardrails** (declarative, best-effort checks enforced server-side, with a report in the result's `_meta`). |
 | [`custom_guardrails/`](custom_guardrails/README.md) | Writing custom pattern, prompt and de-identification guardrails, with in-process stand-ins for the LLM and de-identification providers. |
+| [`gravity_guardrails/`](gravity_guardrails/README.md) | Classifier (SLM) guardrails backed by Gravity guardrail configs, with an offline in-process stand-in for the Gravity service, applied to tool arguments and tool results to block prompt injection. |
 
 ## Running an example
 

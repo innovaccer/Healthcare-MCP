@@ -213,11 +213,14 @@ example.
 - Structured content and `_meta` are normalized with pydantic's JSON serialization before
   inspection, so a non-JSON value cannot hide PHI. Content that cannot be serialized fails
   closed with an `error` verdict.
-- `timeout_ms` can only interrupt an evaluator that yields to the event loop (prompt, deid).
+- `timeout_ms` can only interrupt an evaluator that yields to the event loop (prompt, deid, classifier).
   The synchronous `pattern` and `builtin` evaluators run to completion, so a
   deployer-supplied regex must be linear in the input size.
 - A provider or model error surfaces only as a fixed-message evaluation error (`error`
   verdict); the provider's own message is never propagated.
+- The `classifier` evaluator kind calls a deployer-supplied `ClassifierProvider`
+  (HMCP ships no classifier and no vendor adapter). A `classifier` definition
+  supports the `block` and `annotate` actions only and is not a cascade step.
 
 ## Running the tests
 

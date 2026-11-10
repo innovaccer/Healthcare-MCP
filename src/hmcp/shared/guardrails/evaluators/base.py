@@ -33,7 +33,7 @@ class EvaluationContext:
 class Evaluator(Protocol):
     """An evaluator turns text units into findings for each unit."""
 
-    kind: str  # e.g. "pattern", "prompt", "deid", "builtin:redaction_placeholder"
+    kind: str  # e.g. "pattern", "prompt", "deid", "classifier", "builtin:redaction_placeholder"
 
     async def find(
         self, units: Sequence[TextUnit], ctx: EvaluationContext

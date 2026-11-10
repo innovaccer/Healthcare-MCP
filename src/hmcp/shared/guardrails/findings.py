@@ -11,7 +11,7 @@ class Finding:
     category: str  # a PhiCategory value (or "REDACTION_PLACEHOLDER" for that builtin)
     start: int
     end: int  # exclusive
-    source: str  # "pattern" | "prompt" | "deid" | "builtin"
+    source: str  # "pattern" | "prompt" | "deid" | "classifier" | "builtin"
     identifier_type: str | None = None
     # matched text; repr=False so a logged Finding never shows PHI
     value: str = field(default="", repr=False, compare=False)

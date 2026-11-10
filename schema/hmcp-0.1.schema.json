@@ -145,6 +145,36 @@
       "title": "CascadeEvaluatorSpec",
       "type": "object"
     },
+    "ClassifierEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for a text-classifier evaluator, for example a small language model (SLM).",
+      "properties": {
+        "classifier": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Classifier",
+          "type": "string"
+        },
+        "kind": {
+          "const": "classifier",
+          "title": "Kind",
+          "type": "string"
+        },
+        "maxCharsPerCall": {
+          "default": 12000,
+          "maximum": 200000,
+          "minimum": 500,
+          "title": "Maxcharspercall",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "classifier"
+      ],
+      "title": "ClassifierEvaluatorSpec",
+      "type": "object"
+    },
     "DeidEvaluatorSpec": {
       "additionalProperties": false,
       "description": "Spec for the de-identification evaluator.",
@@ -200,6 +230,7 @@
             "mapping": {
               "builtin": "#/$defs/BuiltinEvaluatorSpec",
               "cascade": "#/$defs/CascadeEvaluatorSpec",
+              "classifier": "#/$defs/ClassifierEvaluatorSpec",
               "deid": "#/$defs/DeidEvaluatorSpec",
               "pattern": "#/$defs/PatternEvaluatorSpec",
               "prompt": "#/$defs/PromptEvaluatorSpec"
@@ -215,6 +246,9 @@
             },
             {
               "$ref": "#/$defs/DeidEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/ClassifierEvaluatorSpec"
             },
             {
               "$ref": "#/$defs/BuiltinEvaluatorSpec"

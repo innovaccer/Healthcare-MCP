@@ -41,8 +41,9 @@ HMCP guardrails distinguish three elements.
   **Normative.**
 - An **evaluator** is the implementation that inspects content for a given
   evaluator kind. The enforcing party supplies it. A `prompt` evaluator runs on
-  the enforcer's **own** LLM provider, and a `deid` evaluator calls a
-  de-identification **model** the enforcer controls (HMCP ships none).
+  the enforcer's **own** LLM provider, a `deid` evaluator calls a
+  de-identification **model** the enforcer controls, and a `classifier` evaluator
+  calls a **text classifier** the enforcer controls (HMCP ships none).
   **SDK behavior.**
 - A **report** is a per-call `GuardrailReportEntry` written into the result
   `_meta`. It records which definition ran, at which stage, with which verdict,
@@ -75,6 +76,7 @@ Python code uses snake_case; JSON uses camelCase.
 Cross-field validators (**normative**):
 
 - A `builtin` evaluator requires `action.onFinding == "block"`.
+- A `classifier` evaluator requires `action.onFinding` of `"block"` or `"annotate"`.
 - An `action.onFinding` of `"pseudonymize"` requires `"output"` in `stages`.
 
 ### `appliesTo`
@@ -125,7 +127,7 @@ back.
 ## Evaluator kinds
 
 The `evaluator` field is a discriminated union on `kind`. The kinds are
-`pattern`, `prompt`, `deid`, `builtin` and `cascade`.
+`pattern`, `prompt`, `deid`, `classifier`, `builtin` and `cascade`.
 
 ### `pattern`
 
@@ -221,6 +223,55 @@ adapter. `DeidEvaluatorSpec` fields: `kind` (`"deid"`), `categories`
   context, so a provider message cannot carry PHI; the guardrail then fails per
   its failure mode.
 
+### `classifier`
+
+**SDK behavior** (`src/hmcp/shared/guardrails/evaluators/classifier.py`). Calls a
+deployer-supplied text classifier, such as a small language model (SLM). HMCP
+ships no classifier and no vendor adapter. `ClassifierEvaluatorSpec` fields:
+`kind` (`"classifier"`), `classifier` (a deployer-scoped classifier name; pattern
+`^[a-z0-9][a-z0-9._-]*$`, at most 128 characters; the provider resolves it to a
+model or service) and `max_chars_per_call` (`maxCharsPerCall`, default `12000`,
+range `500`–`200000`). Wire example:
+`{"kind": "classifier", "classifier": "prompt-injection", "maxCharsPerCall": 8000}`.
+
+Behavior:
+
+- **Chunking.** Chunking is identical to the `prompt` evaluator: consecutive units
+  are packed into chunks whose texts, joined with `"\n---\n"`, stay within
+  `max_chars_per_call`; a single longer unit forms its own chunk and is never
+  truncated. A chunk is sent only if at least one of its units contains
+  non-whitespace text.
+- **Requests.** One `ClassificationRequest(classifier, stage, text)` is sent per
+  chunk, with at most 4 calls in flight per evaluation (one stage of one tool
+  call); a provider that needs a global rate limit applies its own. The provider
+  returns a
+  `ClassificationResult` with a required strict boolean `flagged`, or a mapping
+  that validates as one (extra keys are ignored).
+- **Findings.** A flagged chunk produces exactly one finding, on the chunk's first
+  unit that contains non-whitespace text, covering that unit; the finding is a
+  whole-unit span, not a located match; the report carries only a count of
+  findings. The report's `findings` count is the number of flagged chunks. A
+  classifier flags whole chunks, not spans, so redaction and pseudonymization are
+  not available.
+- **Failures.** A provider exception raises `EvaluationError("classifier call
+  failed")`; an invalid result raises `EvaluationError("invalid classifier
+  result")`. Any failed chunk fails the evaluation, and the guardrail reports
+  `error` (then `failureMode` decides).
+
+> **Warning (normative).** A classifier evaluator reduces risk; it does not
+> guarantee detection. Recall must be measured on the deployer's own data. A
+> classifier whose input window is shorter than `max_chars_per_call` can truncate
+> input without notice; set `max_chars_per_call` within the classifier's input
+> window.
+
+> **Important:** An HMCP `output` stage inspects a tool result, which becomes
+> input to the host's model. A provider for a service that distinguishes input
+> checks from output checks must choose the mapping for each stage deliberately;
+> the example maps both stages to the service's input check.
+
+`examples/gravity_guardrails/` is an example that adapts Gravity guardrail configs
+to a `ClassifierProvider`.
+
 ### `builtin`
 
 **SDK behavior** (`src/hmcp/shared/guardrails/evaluators/builtin.py`).
@@ -245,11 +296,12 @@ HMCP-defined checks. `BuiltinEvaluatorSpec` fields: `kind` (`"builtin"`), `name`
 order, unions the findings per unit, then `merge_overlaps`. Its `kind` string is
 `"cascade(" + ",".join(step kinds) + ")"`. `CascadeEvaluatorSpec` fields: `kind`
 (`"cascade"`), `steps` (at least two; each step is a `pattern`, `prompt` or
-`deid` spec).
+`deid` spec; a `classifier` is not a cascade step).
 
-`build_evaluator(spec, *, llm, deid)` turns a spec into a runnable evaluator and
-fails fast at server construction: a `prompt` spec without an LLM provider, or a
-`deid` spec without a de-identification model, raises `ValueError`.
+`build_evaluator(spec, *, llm, deid, classifier=None)` turns a spec into a
+runnable evaluator and fails fast at server construction: a `prompt` spec
+without an LLM provider, a `deid` spec without a de-identification model, or a
+`classifier` spec without a classifier provider, raises `ValueError`.
 
 ## Actions
 
@@ -491,7 +543,8 @@ required guardrail.
   applied (a `closed` guardrail then blocks the call or result, so they are not
   returned). Model and provider exceptions surface only as fixed-message
   evaluation errors (for example `LLM call failed`, `invalid LLM verdict`,
-  `deid model failed`, `invalid deid response`) and never carry or chain the
+  `deid model failed`, `invalid deid response`, `classifier call failed`,
+  `invalid classifier result`) and never carry or chain the
   provider's message. The only log line
   is `guardrail %s failed: %s` with the definition id and the exception type
   name; content, finding values, prompts and provider replies are never logged.
@@ -553,8 +606,9 @@ guarantee detection or removal.
 
 ## Provider integration and data handling
 
-**SDK behavior.** Two protocols integrate with the evaluators: `LLMProvider` for
-`prompt` evaluators and `DeidentificationModel` for `deid` evaluators.
+**SDK behavior.** Three protocols integrate with the evaluators: `LLMProvider` for
+`prompt` evaluators, `DeidentificationModel` for `deid` evaluators and
+`ClassifierProvider` for `classifier` evaluators.
 
 ```python
 class LLMProvider(Protocol):
@@ -564,14 +618,20 @@ class DeidentificationModel(Protocol):
     async def process_text(
         self, request: DeidRequest
     ) -> Sequence[DeidTextResult | Mapping[str, Any]]: ...
+
+class ClassifierProvider(Protocol):
+    async def classify(
+        self, request: ClassificationRequest
+    ) -> ClassificationResult | Mapping[str, Any]: ...
 ```
 
 **SDK behavior.** For a `prompt` evaluator, HMCP builds the `system` and `user`
 strings itself: it renders the definition's templates with a fresh per-call
 nonce and frames the inspected content between them, then calls `complete` with
 the rendered strings. `complete` returns the model's reply as a string; the
-provider must not log the content it is given, and any exception it raises makes
-the guardrail fail closed. A definition is validated when it is constructed: an
+provider must not log the content it is given, and any exception it raises fails
+the evaluation: the guardrail reports an `error` verdict and then fails per its
+`failureMode`. A definition is validated when it is constructed: an
 `IdentifierType.textPatterns` regex that does not compile (or does not have
 exactly one capture group), or an `ActionSpec.placeholder` that lacks
 `{category}` (or adds another `{...}` field), raises `ValueError` before any call
@@ -672,11 +732,28 @@ class HttpDeidModel:
 For example, `HttpDeidModel("https://deid.internal.example.com", token=...)`; pass
 it as `GuardrailsConfig(deid=...)` for definitions that use a `deid` evaluator.
 
+### `ClassifierProvider`
+
+**SDK behavior** (`src/hmcp/shared/guardrails/evaluators/classifier.py`). HMCP
+ships no classifier and no vendor adapter: a deployer implements
+`ClassifierProvider` against its own self-hosted or BAA-covered classifier
+service, such as a small language model (SLM). The classifier name in a
+`classifier` evaluator is resolved by the provider to a model or service.
+
+A `classify` call carries a `ClassificationRequest(classifier, stage, text)`; the
+provider returns a `ClassificationResult` with a required strict boolean
+`flagged`, or a mapping that validates as one (extra keys are ignored). The
+provider must not log the text it is given or raise it, and it raises for an
+unknown classifier name. Any exception it raises fails the evaluation: the
+guardrail reports an `error` verdict and then fails per its `failureMode`.
+
 ### PHI and BAA data handling
 
 **Normative.** Content sent to a `prompt` evaluator is PHI: the model must be
 covered by a BAA with zero data retention. Content sent to a `deid` evaluator
-goes to a self-hosted or BAA-covered de-identification model. Markers created by
+goes to a self-hosted or BAA-covered de-identification model. Content sent to a
+`classifier` evaluator is PHI: the classifier service must be self-hosted or
+covered by a BAA, with retention appropriate for PHI. Markers created by
 pseudonymization are re-identified only inside the patient context that produced
 them, and PHI must not outlive that context: the in-memory vault drops a
 context's entries at its `expires_at`. The `dataHandling` field of a definition
@@ -721,9 +798,11 @@ server = HMCPServer(
 
 `GuardrailsConfig` fields: `definitions` (a sequence of
 `GuardrailDefinition`), `mandatory` (ids, default `()`), `llm` (an `LLMProvider`
-or `None`), `deid` (a `DeidentificationModel` or `None`) and `vault` (a
-`MarkerVault`, default `InMemoryMarkerVault`). A prompt definition without an
-`llm`, or a deid definition without a `deid` model, fails fast at construction.
+or `None`), `deid` (a `DeidentificationModel` or `None`), `vault` (a
+`MarkerVault`, default `InMemoryMarkerVault`) and `classifier` (a
+`ClassifierProvider` or `None`, default `None`). A prompt definition without an
+`llm`, a deid definition without a `deid` model, or a classifier definition
+without a `classifier` provider, fails fast at construction.
 
 ## Client integration
 

@@ -32,6 +32,7 @@ from hmcp.shared.guardrails import (
     InMemoryMarkerVault,
     MarkerVault,
 )
+from hmcp.shared.guardrails.evaluators.classifier import ClassifierProvider
 from hmcp.shared.guardrails.evaluators.deid import DeidentificationModel
 from hmcp.shared.guardrails.evaluators.prompt import LLMProvider
 from hmcp.shared.types import (
@@ -47,9 +48,9 @@ class GuardrailsConfig:
     """Everything the guardrails extension needs to run.
 
     ``mandatory`` lists ids applied to every call they apply to (in addition to
-    anything the client requires). ``llm`` and ``deid`` are only needed when a
-    definition uses a prompt or deid evaluator; a missing model fails fast at
-    extension construction.
+    anything the client requires). ``llm``, ``deid`` and ``classifier`` are only
+    needed when a definition uses a prompt, deid or classifier evaluator; a
+    missing provider fails fast at extension construction.
     """
 
     definitions: Sequence[GuardrailDefinition]
@@ -57,6 +58,7 @@ class GuardrailsConfig:
     llm: LLMProvider | None = None
     deid: DeidentificationModel | None = None
     vault: MarkerVault = field(default_factory=InMemoryMarkerVault)
+    classifier: ClassifierProvider | None = None
 
 
 class GuardrailsExtension(Extension):
@@ -84,10 +86,15 @@ class GuardrailsExtension(Extension):
             if mandatory_id not in self._by_id:
                 raise ValueError(f"mandatory guardrail {mandatory_id!r} is not defined")
         # One runtime per definition; build_evaluator fails fast on a prompt
-        # definition without an LLM or a deid definition without a provider.
+        # definition without an LLM, a deid definition without a provider or a
+        # classifier definition without a provider.
         self._runtimes = {
             definition.id: GuardrailRuntime(
-                definition, llm=config.llm, deid=config.deid, vault=config.vault
+                definition,
+                llm=config.llm,
+                deid=config.deid,
+                classifier=config.classifier,
+                vault=config.vault,
             )
             for definition in self._definitions
         }

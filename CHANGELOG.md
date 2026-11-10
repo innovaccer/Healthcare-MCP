@@ -25,8 +25,8 @@ for the before-and-after mapping of every renamed or removed name.
   (`SmartLaunchPolicy` by default), which also enforces the SMART `patient` claim
   as a ceiling.
 - **The guardrails extension**, `com.innovaccer/hmcp-guardrails` (revision `"1"`):
-  declarative `GuardrailDefinition`s with `pattern`, `prompt`, `deid`, `builtin`
-  and `cascade` evaluators and `block` / `redact` / `pseudonymize` / `annotate`
+  declarative `GuardrailDefinition`s with `pattern`, `prompt`, `deid`, `classifier`,
+  `builtin` and `cascade` evaluators and `block` / `redact` / `pseudonymize` / `annotate`
   actions, enforced on `tools/call` arguments and results. Each call receives a list
   of `GuardrailReportEntry` in the result `_meta`, so a guardrail that did not
   run is visible; a client can require guardrails and the server rejects an
@@ -37,6 +37,13 @@ for the before-and-after mapping of every renamed or removed name.
   `phi-redaction` and `phi-deidentification` use patterns plus a prompt. Configured with
   `GuardrailsConfig`, installed as `GuardrailsExtension`, reachable through
   `HMCPServer.guardrails`.
+- **A `classifier` evaluator kind for text classifiers** (such as small language
+  models, SLMs): a definition names a deployer-scoped classifier, the deployer
+  supplies a `ClassifierProvider`, and `GuardrailsConfig(classifier=...)` wires it
+  in. A `classifier` evaluator supports the `block` and `annotate` actions only and
+  is not a cascade step. `examples/gravity_guardrails/` adapts Gravity guardrail
+  configs to a `ClassifierProvider`, with an offline stand-in for the Gravity
+  service.
 - **Client APIs for both extensions** on `HMCPClientConnector`:
   `open_patient_context`, `get_patient_context`, `close_patient_context`, and
   `call_tool(patient_context=..., require_guardrails=...)`; the handle is a

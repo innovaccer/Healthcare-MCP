@@ -27,6 +27,7 @@ from hmcp.shared.errors import HMCPErrorCode
 from hmcp.shared.guardrails.definition import (
     ActionSpec,
     AppliesTo,
+    ClassifierEvaluatorSpec,
     GuardrailDefinition,
     PatternEvaluatorSpec,
     PhiCategory,
@@ -119,6 +120,38 @@ def _prompt_definition(*, gid: str, failure_mode: str) -> GuardrailDefinition:
             categories=(PhiCategory.NAME,),
         ),
         action=ActionSpec(on_finding="redact"),
+        failure_mode=failure_mode,
+    )
+
+
+class FakeClassifier:
+    """A fake classifier provider over a fixed verdict; records its requests."""
+
+    def __init__(self, *, flagged: bool = False, raises: bool = False) -> None:
+        self._flagged = flagged
+        self._raises = raises
+        self.requests: list[Any] = []
+
+    async def classify(self, request: Any) -> Any:
+        self.requests.append(request)
+        if self._raises:
+            raise RuntimeError("classifier down")
+        return {"flagged": self._flagged}
+
+
+def _classifier_definition(
+    *,
+    gid: str,
+    stages: tuple[str, ...] = ("input",),
+    failure_mode: str = "closed",
+) -> GuardrailDefinition:
+    return GuardrailDefinition(
+        id=gid,
+        version="1.0.0",
+        title="test classifier",
+        stages=stages,
+        evaluator=ClassifierEvaluatorSpec(kind="classifier", classifier="toxicity"),
+        action=ActionSpec(on_finding="block"),
         failure_mode=failure_mode,
     )
 
@@ -486,3 +519,132 @@ async def test_report_entries_are_camel_case_and_carry_no_content() -> None:
     assert "duration_ms" not in entry
     assert set(entry) == REPORT_KEYS
     assert all("900-12-3456" not in str(value) for value in entry.values())
+
+
+# ---------------------------------------------------------------------------
+# Classifier guardrails
+# ---------------------------------------------------------------------------
+
+
+async def test_classifier_input_flagged_blocks_before_tool_runs() -> None:
+    definition = _classifier_definition(
+        gid="com.example.test/classifier-input", stages=("input",)
+    )
+    classifier = FakeClassifier(flagged=True)
+    extension = GuardrailsExtension(
+        GuardrailsConfig(
+            definitions=[definition],
+            classifier=classifier,
+            mandatory=[definition.id],
+        ),
+        _scope_for(),
+    )
+    server = MCPServer("t", extensions=[extension])
+    calls: list[str] = []
+
+    @server.tool()
+    async def note(text: str) -> str:
+        calls.append(text)
+        return "saved"
+
+    async with Client(server) as client:
+        result = await client.call_tool("note", {"text": "anything"})
+
+    assert result.is_error is True
+    assert result.content[0].text == f"Blocked by guardrail {definition.id}"
+    entry = _report(result)[0]
+    assert entry["evaluator"] == "classifier"
+    assert entry["verdict"] == "blocked"
+    assert calls == []
+
+
+async def test_classifier_output_flagged_blocks_after_tool_runs() -> None:
+    definition = _classifier_definition(
+        gid="com.example.test/classifier-output", stages=("output",)
+    )
+    classifier = FakeClassifier(flagged=True)
+    extension = GuardrailsExtension(
+        GuardrailsConfig(
+            definitions=[definition],
+            classifier=classifier,
+            mandatory=[definition.id],
+        ),
+        _scope_for(),
+    )
+    server = MCPServer("t", extensions=[extension])
+    calls: list[str] = []
+
+    @server.tool()
+    async def chart() -> str:
+        calls.append("ran")
+        return "anything"
+
+    async with Client(server) as client:
+        result = await client.call_tool("chart", {})
+
+    assert calls == ["ran"]
+    assert result.is_error is True
+    assert result.content[0].text == f"Blocked by guardrail {definition.id}"
+
+
+async def test_classifier_raising_provider_closed_blocks() -> None:
+    definition = _classifier_definition(
+        gid="com.example.test/classifier-closed",
+        stages=("input",),
+        failure_mode="closed",
+    )
+    extension = GuardrailsExtension(
+        GuardrailsConfig(
+            definitions=[definition],
+            classifier=FakeClassifier(raises=True),
+            mandatory=[definition.id],
+        ),
+        _scope_for(),
+    )
+    server = MCPServer("t", extensions=[extension])
+
+    @server.tool()
+    async def chart(text: str) -> str:
+        return "ok"
+
+    async with Client(server) as client:
+        result = await client.call_tool("chart", {"text": "anything"})
+
+    assert result.is_error is True
+    assert _report(result)[0]["verdict"] == "error"
+
+
+async def test_classifier_raising_provider_open_returns_tool_result() -> None:
+    definition = _classifier_definition(
+        gid="com.example.test/classifier-open",
+        stages=("input",),
+        failure_mode="open",
+    )
+    extension = GuardrailsExtension(
+        GuardrailsConfig(
+            definitions=[definition],
+            classifier=FakeClassifier(raises=True),
+            mandatory=[definition.id],
+        ),
+        _scope_for(),
+    )
+    server = MCPServer("t", extensions=[extension])
+
+    @server.tool()
+    async def chart(text: str) -> str:
+        return "ok"
+
+    async with Client(server) as client:
+        result = await client.call_tool("chart", {"text": "anything"})
+
+    assert result.is_error is False
+    assert result.content[0].text == "ok"
+    assert _report(result)[0]["verdict"] == "error"
+
+
+async def test_classifier_definition_without_provider_rejected() -> None:
+    definition = _classifier_definition(gid="com.example.test/classifier-missing")
+    with pytest.raises(
+        ValueError, match="classifier evaluator requires a classifier provider"
+    ):
+        GuardrailsExtension(GuardrailsConfig(definitions=[definition]), _scope_for())

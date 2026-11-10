@@ -33,6 +33,7 @@ from hmcp.shared.types import (
 from .definition import (
     BuiltinEvaluatorSpec,
     CascadeEvaluatorSpec,
+    ClassifierEvaluatorSpec,
     DeidEvaluatorSpec,
     EvaluatorSpec,
     GuardrailDefinition,
@@ -49,6 +50,7 @@ from .evaluators.builtin import (
     PatientContextConsistencyEvaluator,
     RedactionPlaceholderEvaluator,
 )
+from .evaluators.classifier import ClassifierEvaluator, ClassifierProvider
 from .evaluators.deid import DeidEvaluator, DeidentificationModel
 from .evaluators.pattern import PatternEvaluator
 from .evaluators.prompt import LLMProvider, PromptEvaluator
@@ -98,6 +100,7 @@ def build_evaluator(
     *,
     llm: LLMProvider | None,
     deid: DeidentificationModel | None,
+    classifier: ClassifierProvider | None = None,
 ) -> Evaluator:
     """Turn a declarative spec into a runnable evaluator; fail fast if unusable."""
     if isinstance(spec, PatternEvaluatorSpec):
@@ -110,6 +113,10 @@ def build_evaluator(
         if deid is None:
             raise ValueError("deid evaluator requires a de-identification model")
         return DeidEvaluator(spec, deid)
+    if isinstance(spec, ClassifierEvaluatorSpec):
+        if classifier is None:
+            raise ValueError("classifier evaluator requires a classifier provider")
+        return ClassifierEvaluator(spec, classifier)
     if isinstance(spec, BuiltinEvaluatorSpec):
         if spec.name == "redaction_placeholder":
             return RedactionPlaceholderEvaluator()
@@ -118,7 +125,10 @@ def build_evaluator(
         raise ValueError(f"unknown builtin evaluator {spec.name!r}")
     if isinstance(spec, CascadeEvaluatorSpec):
         return CascadeEvaluator(
-            [build_evaluator(step, llm=llm, deid=deid) for step in spec.steps]
+            [
+                build_evaluator(step, llm=llm, deid=deid, classifier=classifier)
+                for step in spec.steps
+            ]
         )
     raise ValueError(f"unknown evaluator kind {getattr(spec, 'kind', None)!r}")
 
@@ -232,11 +242,14 @@ class GuardrailRuntime:
         *,
         llm: LLMProvider | None = None,
         deid: DeidentificationModel | None = None,
+        classifier: ClassifierProvider | None = None,
         vault: MarkerVault,
     ) -> None:
         self._definition = definition
         self._vault = vault
-        self._evaluator = build_evaluator(definition.evaluator, llm=llm, deid=deid)
+        self._evaluator = build_evaluator(
+            definition.evaluator, llm=llm, deid=deid, classifier=classifier
+        )
         self.kind = self._evaluator.kind
 
     async def run_input(
@@ -290,9 +303,9 @@ class GuardrailRuntime:
         """Run the evaluator under the definition's timeout.
 
         ``timeout_ms`` can only interrupt an evaluator that yields to the event
-        loop (prompt, deid). A synchronous evaluator (pattern, builtin) runs to
-        completion on the event loop and cannot be interrupted by this timeout;
-        it must therefore be kept linear in the input size.
+        loop (prompt, deid, classifier). A synchronous evaluator (pattern,
+        builtin) runs to completion on the event loop and cannot be interrupted
+        by this timeout; it must therefore be kept linear in the input size.
         """
         results = await asyncio.wait_for(
             self._evaluator.find(units, ctx), self._definition.timeout_ms / 1000
