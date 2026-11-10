@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [Unreleased]
+
+## [0.1.0] - 2026-11-10
 
 HMCP 0.1.0 is a breaking protocol change: it moves to `mcp>=2.3.0,<2.4` and MCP spec
 **2026-07-28**, which removed protocol sessions and the initialize handshake and

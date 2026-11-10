@@ -35,9 +35,10 @@ from GitHub Actions using [Trusted Publishing](https://docs.pypi.org/trusted-pub
 1. **Bump the version:** Edit `__version__` in `src/hmcp/__init__.py` (the single
    source of truth; `pyproject.toml` reads it via `[tool.hatch.version]`).
 
-2. **Date the changelog:** The current release section in `CHANGELOG.md` is headed
-   `## [X.Y.Z] - Unreleased`. The date is set when the release is tagged: replace
-   `Unreleased` with the release date, e.g. `## [0.1.0] - 2026-11-09`.
+2. **Date the changelog:** Changes since the last release are collected under
+   `## [Unreleased]` in `CHANGELOG.md`. The date is set when the release is tagged:
+   rename that heading to the version and the release date, e.g.
+   `## [0.2.0] - 2026-12-01`, and add a new, empty `## [Unreleased]` section above it.
 
 3. **Merge:** Open a pull request with those two changes, have it reviewed, and merge
    to `main`.
