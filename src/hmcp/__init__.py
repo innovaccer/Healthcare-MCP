@@ -10,6 +10,6 @@ The server-side entry point lives in :mod:`hmcp.server` and the client-side
 connector in :mod:`hmcp.client`.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.0rc1"
 
 __all__ = ["__version__"]
