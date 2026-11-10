@@ -1,0 +1,968 @@
+{
+  "$defs": {
+    "ActionSpec": {
+      "additionalProperties": false,
+      "description": "What to do on a finding, and the placeholder used when redacting.",
+      "properties": {
+        "onFinding": {
+          "enum": [
+            "block",
+            "redact",
+            "pseudonymize",
+            "annotate"
+          ],
+          "title": "Onfinding",
+          "type": "string"
+        },
+        "placeholder": {
+          "default": "[REDACTED:{category}]",
+          "title": "Placeholder",
+          "type": "string"
+        }
+      },
+      "required": [
+        "onFinding"
+      ],
+      "title": "ActionSpec",
+      "type": "object"
+    },
+    "AppliesTo": {
+      "additionalProperties": false,
+      "description": "Which patient scopes and tools a guardrail applies to (None = all).",
+      "properties": {
+        "patientScopes": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "patient",
+                  "population",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Patientscopes"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tools"
+        }
+      },
+      "title": "AppliesTo",
+      "type": "object"
+    },
+    "BuiltinEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for an HMCP builtin evaluator (context consistency or placeholder).",
+      "properties": {
+        "identifierTypes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/IdentifierType"
+          },
+          "title": "Identifiertypes",
+          "type": "array"
+        },
+        "kind": {
+          "const": "builtin",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "enum": [
+            "patient_context_consistency",
+            "redaction_placeholder"
+          ],
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "title": "BuiltinEvaluatorSpec",
+      "type": "object"
+    },
+    "CascadeEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec that runs its steps in order and unions their findings.",
+      "properties": {
+        "kind": {
+          "const": "cascade",
+          "title": "Kind",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "deid": "#/$defs/DeidEvaluatorSpec",
+                "pattern": "#/$defs/PatternEvaluatorSpec",
+                "prompt": "#/$defs/PromptEvaluatorSpec"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PatternEvaluatorSpec"
+              },
+              {
+                "$ref": "#/$defs/PromptEvaluatorSpec"
+              },
+              {
+                "$ref": "#/$defs/DeidEvaluatorSpec"
+              }
+            ]
+          },
+          "minItems": 2,
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "steps"
+      ],
+      "title": "CascadeEvaluatorSpec",
+      "type": "object"
+    },
+    "ClassifierEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for a text-classifier evaluator, for example a small language model (SLM).",
+      "properties": {
+        "classifier": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Classifier",
+          "type": "string"
+        },
+        "kind": {
+          "const": "classifier",
+          "title": "Kind",
+          "type": "string"
+        },
+        "maxCharsPerCall": {
+          "default": 12000,
+          "maximum": 200000,
+          "minimum": 500,
+          "title": "Maxcharspercall",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "classifier"
+      ],
+      "title": "ClassifierEvaluatorSpec",
+      "type": "object"
+    },
+    "DeidEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for the de-identification evaluator.",
+      "properties": {
+        "categories": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PhiCategory"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "kind": {
+          "const": "deid",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "DeidEvaluatorSpec",
+      "type": "object"
+    },
+    "GuardrailDefinition": {
+      "additionalProperties": false,
+      "description": "A portable, declarative guardrail definition.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionSpec"
+        },
+        "appliesTo": {
+          "$ref": "#/$defs/AppliesTo",
+          "default": {
+            "patientScopes": null,
+            "tools": null
+          }
+        },
+        "dataHandling": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Datahandling",
+          "type": "object"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "evaluator": {
+          "discriminator": {
+            "mapping": {
+              "builtin": "#/$defs/BuiltinEvaluatorSpec",
+              "cascade": "#/$defs/CascadeEvaluatorSpec",
+              "classifier": "#/$defs/ClassifierEvaluatorSpec",
+              "deid": "#/$defs/DeidEvaluatorSpec",
+              "pattern": "#/$defs/PatternEvaluatorSpec",
+              "prompt": "#/$defs/PromptEvaluatorSpec"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PatternEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/PromptEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/DeidEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/ClassifierEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/BuiltinEvaluatorSpec"
+            },
+            {
+              "$ref": "#/$defs/CascadeEvaluatorSpec"
+            }
+          ],
+          "title": "Evaluator"
+        },
+        "failureMode": {
+          "default": "closed",
+          "enum": [
+            "closed",
+            "open"
+          ],
+          "title": "Failuremode",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+/[a-z0-9][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "stages": {
+          "items": {
+            "enum": [
+              "input",
+              "output"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Stages",
+          "type": "array"
+        },
+        "timeoutMs": {
+          "default": 5000,
+          "maximum": 60000,
+          "minimum": 100,
+          "title": "Timeoutms",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "title",
+        "stages",
+        "evaluator",
+        "action"
+      ],
+      "title": "GuardrailDefinition",
+      "type": "object"
+    },
+    "GuardrailReportEntry": {
+      "additionalProperties": false,
+      "description": "One guardrail's result for one stage of one call.\n\n``findings`` is a count only and never carries matched text.",
+      "properties": {
+        "digest": {
+          "title": "Digest",
+          "type": "string"
+        },
+        "durationMs": {
+          "minimum": 0,
+          "title": "Durationms",
+          "type": "integer"
+        },
+        "evaluator": {
+          "title": "Evaluator",
+          "type": "string"
+        },
+        "findings": {
+          "minimum": 0,
+          "title": "Findings",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/GuardrailVerdict"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "stage",
+        "verdict",
+        "evaluator",
+        "findings",
+        "durationMs"
+      ],
+      "title": "GuardrailReportEntry",
+      "type": "object"
+    },
+    "GuardrailVerdict": {
+      "description": "Outcome a guardrail reports for the text it inspected.",
+      "enum": [
+        "pass",
+        "redacted",
+        "pseudonymized",
+        "reidentified",
+        "annotated",
+        "blocked",
+        "error"
+      ],
+      "title": "GuardrailVerdict",
+      "type": "string"
+    },
+    "GuardrailsRequestMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "require": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "require"
+      ],
+      "type": "object"
+    },
+    "GuardrailsResultMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "report": {
+          "items": {
+            "$ref": "#/$defs/GuardrailReportEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "report"
+      ],
+      "type": "object"
+    },
+    "GuardrailsSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "definition": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "enforcedBy": {
+                "const": "server"
+              },
+              "id": {
+                "type": "string"
+              },
+              "mandatory": {
+                "type": "boolean"
+              },
+              "stages": {
+                "items": {
+                  "enum": [
+                    "input",
+                    "output"
+                  ]
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "digest",
+              "stages",
+              "definition",
+              "enforcedBy",
+              "mandatory"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "available"
+      ],
+      "type": "object"
+    },
+    "Identifier": {
+      "additionalProperties": false,
+      "description": "A patient identifier: ``system`` (its assigning authority) and ``value``.",
+      "properties": {
+        "system": {
+          "title": "System",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "value"
+      ],
+      "title": "Identifier",
+      "type": "object"
+    },
+    "IdentifierType": {
+      "additionalProperties": false,
+      "description": "A PHI identifier type: text regexes and/or JSON keys, plus its category.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/PhiCategory"
+        },
+        "displayName": {
+          "title": "Displayname",
+          "type": "string"
+        },
+        "isAccessKey": {
+          "default": false,
+          "title": "Isaccesskey",
+          "type": "boolean"
+        },
+        "jsonKeys": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Jsonkeys",
+          "type": "array"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "textPatterns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Textpatterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "displayName",
+        "category"
+      ],
+      "title": "IdentifierType",
+      "type": "object"
+    },
+    "PatientContextCloseParams": {
+      "description": "Params for ``hmcp/patientContext/get`` and ``.../close``.",
+      "properties": {
+        "_meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestParamsMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "contextId": {
+          "title": "Contextid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextId"
+      ],
+      "title": "PatientContextCloseParams",
+      "type": "object"
+    },
+    "PatientContextCloseResult": {
+      "additionalProperties": false,
+      "properties": {
+        "_meta": {
+          "type": "object"
+        },
+        "contextId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resultType": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "suspended",
+            "revoked",
+            "closed",
+            "expired"
+          ]
+        }
+      },
+      "required": [
+        "contextId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PatientContextGetParams": {
+      "description": "Params for ``hmcp/patientContext/get`` and ``.../close``.",
+      "properties": {
+        "_meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestParamsMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "contextId": {
+          "title": "Contextid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextId"
+      ],
+      "title": "PatientContextGetParams",
+      "type": "object"
+    },
+    "PatientContextGetResult": {
+      "additionalProperties": false,
+      "properties": {
+        "_meta": {
+          "type": "object"
+        },
+        "contextId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "encounter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "patient": {
+          "$ref": "#/$defs/PatientRef"
+        },
+        "purposeOfUse": {
+          "type": "string"
+        },
+        "resultType": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "suspended",
+            "revoked",
+            "closed",
+            "expired"
+          ]
+        }
+      },
+      "required": [
+        "contextId",
+        "status",
+        "expiresAt",
+        "patient",
+        "encounter",
+        "purposeOfUse"
+      ],
+      "type": "object"
+    },
+    "PatientContextOpenParams": {
+      "description": "Params for ``hmcp/patientContext/open``.\n\n``purposeOfUse`` and ``encounter`` enforce the same patterns as\n:class:`~hmcp.shared.types.PatientContext`, so a bad value is rejected by\nparams validation before the policy runs.",
+      "properties": {
+        "_meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestParamsMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "correlationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correlationid"
+        },
+        "encounter": {
+          "anyOf": [
+            {
+              "pattern": "^Encounter/[A-Za-z0-9\\-\\.]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Encounter"
+        },
+        "patient": {
+          "$ref": "#/$defs/PatientRef"
+        },
+        "purposeOfUse": {
+          "pattern": "^[A-Z]{3,12}$",
+          "title": "Purposeofuse",
+          "type": "string"
+        }
+      },
+      "required": [
+        "patient",
+        "purposeOfUse"
+      ],
+      "title": "PatientContextOpenParams",
+      "type": "object"
+    },
+    "PatientContextOpenResult": {
+      "additionalProperties": false,
+      "properties": {
+        "_meta": {
+          "type": "object"
+        },
+        "contextId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "resultType": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "suspended",
+            "revoked",
+            "closed",
+            "expired"
+          ]
+        }
+      },
+      "required": [
+        "contextId",
+        "status",
+        "expiresAt"
+      ],
+      "type": "object"
+    },
+    "PatientContextRequestMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "contextId": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextId"
+      ],
+      "type": "object"
+    },
+    "PatientContextSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "contextTtlSeconds": {
+          "maximum": 86400,
+          "minimum": 60,
+          "type": "integer"
+        },
+        "defaultToolScope": {
+          "enum": [
+            "patient",
+            "population",
+            "none"
+          ]
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "contextTtlSeconds",
+        "defaultToolScope"
+      ],
+      "type": "object"
+    },
+    "PatientContextToolMeta": {
+      "additionalProperties": true,
+      "properties": {
+        "com.innovaccer/hmcp-patient-context": {
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "enum": [
+                "patient",
+                "population",
+                "none"
+              ]
+            }
+          },
+          "required": [
+            "scope"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "com.innovaccer/hmcp-patient-context"
+      ],
+      "type": "object"
+    },
+    "PatientRef": {
+      "additionalProperties": false,
+      "description": "A reference to a patient: a FHIR relative reference plus optional identifiers.",
+      "properties": {
+        "identifiers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Identifier"
+          },
+          "title": "Identifiers",
+          "type": "array"
+        },
+        "reference": {
+          "pattern": "^Patient/[A-Za-z0-9\\-\\.]{1,64}$",
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference"
+      ],
+      "title": "PatientRef",
+      "type": "object"
+    },
+    "PatternEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for the deterministic regex / JSON-key evaluator.",
+      "properties": {
+        "identifierTypes": {
+          "items": {
+            "$ref": "#/$defs/IdentifierType"
+          },
+          "minItems": 1,
+          "title": "Identifiertypes",
+          "type": "array"
+        },
+        "kind": {
+          "const": "pattern",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "identifierTypes"
+      ],
+      "title": "PatternEvaluatorSpec",
+      "type": "object"
+    },
+    "PhiCategory": {
+      "description": "Vendor-neutral PHI category labels named after the HIPAA Safe Harbor identifier list. They are labels only; using them is not a Safe Harbor de-identification.",
+      "enum": [
+        "NAME",
+        "DATE",
+        "PHONE",
+        "FAX",
+        "EMAIL",
+        "SSN",
+        "MRN",
+        "HEALTH_PLAN_ID",
+        "ACCOUNT_NUMBER",
+        "LICENSE_NUMBER",
+        "VEHICLE_ID",
+        "DEVICE_ID",
+        "URL",
+        "IP_ADDRESS",
+        "BIOMETRIC_ID",
+        "PHOTO",
+        "LOCATION",
+        "OTHER_ID"
+      ],
+      "title": "PhiCategory",
+      "type": "string"
+    },
+    "PromptEvaluatorSpec": {
+      "additionalProperties": false,
+      "description": "Spec for the LLM-prompt evaluator.",
+      "properties": {
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/PhiCategory"
+          },
+          "minItems": 1,
+          "title": "Categories",
+          "type": "array"
+        },
+        "kind": {
+          "const": "prompt",
+          "title": "Kind",
+          "type": "string"
+        },
+        "maxCharsPerCall": {
+          "default": 12000,
+          "maximum": 200000,
+          "minimum": 500,
+          "title": "Maxcharspercall",
+          "type": "integer"
+        },
+        "maxTokens": {
+          "default": 1024,
+          "maximum": 8192,
+          "minimum": 1,
+          "title": "Maxtokens",
+          "type": "integer"
+        },
+        "system": {
+          "title": "System",
+          "type": "string"
+        },
+        "user": {
+          "title": "User",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "system",
+        "user",
+        "categories"
+      ],
+      "title": "PromptEvaluatorSpec",
+      "type": "object"
+    },
+    "RequestParamsMeta": {
+      "additionalProperties": true,
+      "description": "The `_meta` object on request params (schema name: `RequestMetaObject`).\n\nAn open map: arbitrary keys round-trip via `extra_items=Any`. Read or set\nthe reserved `io.modelcontextprotocol/*` keys via the `*_META_KEY` constants.",
+      "properties": {
+        "progressToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Progresstoken"
+        }
+      },
+      "title": "RequestParamsMeta",
+      "type": "object"
+    }
+  },
+  "$id": "https://innovaccer.com/hmcp/schemas/hmcp-0.1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "JSON Schema (draft 2020-12) for the HMCP 0.1.0 wire shapes. Generated by scripts/generate_schema.py from the models in src/; do not edit by hand.",
+  "title": "HMCP 0.1.0 wire shapes"
+}

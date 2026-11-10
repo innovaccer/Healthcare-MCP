@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install black
+        run: pip install black==25.1.0
+      - name: Check formatting
+        run: black --check --target-version py311 src tests examples scripts
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the package and dev extras
+        run: pip install -e ".[dev]"
+      - name: Run the test suite
+        run: pytest -p no:cacheprovider
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Build the wheel and sdist
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
+      - name: Install the built wheel into a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install dist/*.whl pytest pytest-asyncio pytest-cov pytest-mock jsonschema
+      - name: Prove the import resolves to site-packages and matches the wheel version
+        run: |
+          cd /
+          "$RUNNER_TEMP/wheel-venv/bin/python" -I - <<'PY'
+          import glob
+          import os
+
+          import hmcp
+
+          wheel = glob.glob(os.path.join(os.environ["GITHUB_WORKSPACE"], "dist", "*.whl"))[0]
+          wheel_version = os.path.basename(wheel).split("-")[1]
+          print("hmcp.__file__:", hmcp.__file__)
+          assert "site-packages" in hmcp.__file__, hmcp.__file__
+          assert hmcp.__version__ == wheel_version, (hmcp.__version__, wheel_version)
+          print("wheel version matches hmcp.__version__:", hmcp.__version__)
+          PY
+      - name: Run the full suite against the installed wheel
+        run: |
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pytest -p no:cacheprovider -o pythonpath= -o addopts= tests
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/

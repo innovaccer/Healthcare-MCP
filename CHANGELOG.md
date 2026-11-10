@@ -5,6 +5,184 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.0] - 2026-11-10
+
+HMCP 0.1.0 is a breaking protocol change: it moves to `mcp>=2.3.0,<2.4` and MCP spec
+**2026-07-28**, which removed protocol sessions and the initialize handshake and
+deprecated sampling, and it replaces the removed session concept with two
+reverse-DNS extensions. See [Migrating to 0.1](./docs/specification/migration-0.1.md)
+for the before-and-after mapping of every renamed or removed name.
+
+### Added
+- **The patient-context extension**, `com.innovaccer/hmcp-patient-context`
+  (revision `"1"`): a server-minted, opaque handle that the host (never the model)
+  opens through the `hmcp/patientContext/open`, `.../get` and `.../close` methods,
+  bound to the authenticated principal and carried by every patient-scoped tool
+  call in request `_meta`. Every check fails closed and every decision is audited.
+  Configured with `PatientContextConfig`, installed as `PatientContextExtension`,
+  reachable through `HMCPServer.patient_contexts`; a tool reads the bound context
+  with `require_patient_context()`. Authorization goes through an `AccessPolicy`
+  (`SmartLaunchPolicy` by default), which also enforces the SMART `patient` claim
+  as a ceiling.
+- **The guardrails extension**, `com.innovaccer/hmcp-guardrails` (revision `"1"`):
+  declarative `GuardrailDefinition`s with `pattern`, `prompt`, `deid`, `classifier`,
+  `builtin` and `cascade` evaluators and `block` / `redact` / `pseudonymize` / `annotate`
+  actions, enforced on `tools/call` arguments and results. Each call receives a list
+  of `GuardrailReportEntry` in the result `_meta`, so a guardrail that did not
+  run is visible; a client can require guardrails and the server rejects an
+  unapplicable one before the tool runs. A `deid` evaluator calls a
+  deployer-supplied `DeidentificationModel` whose request and response follow
+  a de-identification service's `/process/text` shape (no vendor adapter is shipped). Four
+  reference definitions ship with the SDK (`reference_definitions()`); the reference
+  `phi-redaction` and `phi-deidentification` use patterns plus a prompt. Configured with
+  `GuardrailsConfig`, installed as `GuardrailsExtension`, reachable through
+  `HMCPServer.guardrails`.
+- **A `classifier` evaluator kind for text classifiers** (such as small language
+  models, SLMs): a definition names a deployer-scoped classifier, the deployer
+  supplies a `ClassifierProvider`, and `GuardrailsConfig(classifier=...)` wires it
+  in. A `classifier` evaluator supports the `block` and `annotate` actions only and
+  is not a cascade step. `examples/gravity_guardrails/` adapts Gravity guardrail
+  configs to a `ClassifierProvider`, with an offline stand-in for the Gravity
+  service.
+- **Client APIs for both extensions** on `HMCPClientConnector`:
+  `open_patient_context`, `get_patient_context`, `close_patient_context`, and
+  `call_tool(patient_context=..., require_guardrails=...)`; the handle is a
+  `PatientContextHandle` and a required guardrail that did not report raises
+  `GuardrailReportMissing`.
+- **A runnable EHR example** (`examples/ehr_patient_context/`): an LLM-free,
+  streamable-HTTP server and client that exercise patient context and guardrails
+  end to end on synthetic data.
+- **A generated JSON Schema of the wire shapes**
+  (`schema/hmcp-0.1.schema.json`), its generator (`scripts/generate_schema.py`)
+  and a drift plus live-validation test (`tests/hmcp/test_schema.py`).
+- **HMCP error codes outside the JSON-RPC reserved range**
+  (`PATIENT_CONTEXT_REQUIRED` through `GUARDRAIL_UNAVAILABLE`, `-31001`–`-31006`
+  and `-31011`).
+- **The PyPI distribution `innovaccer-hmcp`** (import name `hmcp`; an unrelated
+  PyPI project named `hmcp` is not this SDK), with `hmcp.__version__`, a `py.typed`
+  marker and `from hmcp.server import HMCPServer` as a lazy re-export.
+- **`hmcp.client.PatientContextGetResult`** exported from `hmcp.client`, and
+  **`HMCPClientConnector` documented as an async context manager** (it connects on
+  entry and cleans up on exit).
+- **`OAuthClient.parse_authorization_response(..., expected_state=...)`**, which
+  raises `InvalidStateError` when the authorization response's `state` is missing or
+  does not match the expected value.
+- **Two more runnable examples**: `examples/custom_guardrails/` (defining and
+  enforcing a custom guardrail) and `examples/quickstart/` (a minimal end-to-end
+  walk-through whose README Quick Start blocks are kept in sync by a drift test).
+- **Continuous integration and release automation**: the test matrix covers Python
+  3.11–3.14 on Linux plus macOS and Windows, and a packaging job builds the wheel,
+  checks its metadata, installs it into a fresh environment and runs the suite
+  against the installed wheel. A release workflow publishes to PyPI with Trusted
+  Publishing (OIDC, no stored token) when a GitHub release is published, and to
+  TestPyPI when a pre-release tag (`v*rc*`, `v*.dev*`) is pushed or the workflow is
+  run manually. Dependabot keeps the GitHub Actions and
+  pip dependencies current.
+- **Project documents and templates**: `SECURITY.md` (Innovaccer's
+  responsible-disclosure form), `CONTRIBUTING.md`, and issue and pull-request
+  templates.
+- A **Disclaimer** section in the README: HMCP is provided as is, makes no
+  accuracy, completeness, compliance or patient-safety guarantee, and the
+  implementer is responsible for validation, compliance and outcomes. The
+  specification, SECURITY.md and the example READMEs link to it.
+
+### Changed
+- **Upgraded to `mcp>=2.3.0,<2.4`** and MCP spec **2026-07-28** (from `1.29.0` /
+  `2025-03-26`). The `[cli]` extra is no longer installed; `mcp[cli]` must be installed
+  separately to use the `mcp` command-line tool. `HMCPServer` and `HMCPClientConnector` build
+  on the new `MCPServer` and `Client`; transport options moved from construction to
+  `run()`, and `connect()` no longer takes transport arguments.
+- **HTTP library moved from `httpx` to `httpx2`** (mcp 2.x replaces httpx) in the
+  OAuth client and the connector; the `OAuthClient` public API is unchanged.
+- **Authentication now audience-binds by default.** When an `AuthSettings` object
+  is supplied, HMCP enforces RFC 8707 `validate_token_resource` unless it is
+  explicitly disabled, and raises `ValueError` if `resource_server_url` is missing
+  (there is nothing to bind to). A server constructed with no authentication logs
+  a warning once.
+- **`HMCPClientConnector.get_patient_context` returns a `PatientContextGetResult`**
+  with snake_case attributes (`context_id`, `status`, `expires_at`, `patient`,
+  `encounter`, `purpose_of_use`) instead of a camelCase `dict`.
+- **`OAuthClient.register_client` defaults `token_endpoint_auth_method` to
+  `client_secret_post`** and accepts only that or `none`; any other value raises
+  `ValueError` before a request is made.
+- **`HMCPServer.run()` rejects an unsupported transport.** `transport="sse"` keeps
+  the HTTP+SSE deprecation message; any other unsupported value raises `ValueError`
+  naming the value and the supported transports.
+- **An unauthenticated server with patient context configured** answers
+  `PATIENT_NOT_AUTHORIZED` (`-31005`) with the message `Request is not
+  authenticated`, and logs a warning once at construction.
+- **Client-side `require_guardrails` pins** (`id@major`) are checked against the
+  report entry's version major.
+- **A non-mapping value under an HMCP `_meta` key raises `TypeError`** in
+  `call_tool`, before the request is sent.
+- **`HMCPClientConnector.connect()` and `cleanup()` are serialized** by a lifecycle
+  lock.
+- **The reference email pattern is anchored at run starts**, so it matches in linear
+  time.
+- **The generated JSON Schema carries each model's description.**
+- **Links to files in this repository are relative in `README.md`,
+  `CONTRIBUTING.md` and `SECURITY.md`.** The PyPI long description rewrites the
+  README's links to absolute GitHub URLs at build time (`hatch-fancy-pypi-readme`,
+  a new build-time requirement).
+- **Reference guardrail titles and descriptions no longer claim coverage**:
+  `phi-redaction` and `phi-deidentification` are described as best-effort redaction
+  and pseudonymization that do not by themselves de-identify data under HIPAA, and
+  `patient-context-consistency` states that it checks only MRN, EMPI and
+  `Patient/<id>` references. Their digests change; their versions stay `1.0.0`.
+
+### Removed
+- **Bidirectional sampling**: `@server.sampling()`, `HMCPClient` and
+  `create_message` are gone, along with the sampling demos and
+  `docs/specification/sampling.md`. MCP 2026-07-28 deprecates sampling, and a
+  server cannot initiate requests outside the MRTR pattern.
+- **HTTP+SSE transport**: `HMCPServer.run(transport="sse")` and `sse_app()` raise
+  `ValueError`; the client connector is streamable-HTTP only.
+- **The `experimental.hmcp` capability** and `docs/specification/context.md`,
+  replaced by the two extensions and `docs/specification/patient-context.md`.
+- **Never-raised authentication exceptions**: `InvalidTokenError`,
+  `ClientValidationError`, `ScopeError`, `InvalidCodeError`, `InvalidPKCEError`,
+  `InvalidRedirectUriError`, `TokenExpiredError` and `RefreshTokenError` are gone.
+  `hmcp.shared.auth` exports `OAuthClient`, `AuthenticationError` and
+  `InvalidStateError`; catch `AuthenticationError` (or `InvalidStateError`) instead.
+
+### Fixed
+- **Malformed guardrails `_meta` in a tool result** no longer turns a successful call
+  into an internal error.
+- **A canceled `connect()` releases its resources.**
+- **The OAuth refresh token is kept when the server does not rotate it.**
+- **A non-ASCII `state` no longer raises `TypeError`** during authorization-response
+  parsing.
+
+### Security
+- **OAuth error messages no longer echo the authorization server's response
+  body.** `OAuthClient` failures now surface only the HTTP status and, when the
+  body carries a valid RFC 6749 `error` code, that code, and never the raw body,
+  which may repeat the submitted `client_secret`.
+- **The client connector no longer logs URL credentials or exception text.**
+  Connection logs name the server host and port only (not a URL that may embed
+  userinfo), and a failed connect logs the exception type name rather than its
+  message, which could carry request data.
+- **Guardrails now inspect a `CallToolResult`'s `_meta`.** Every key except the
+  guardrails report key (which only the extension writes) is inspected; a
+  tool-supplied value under that key is replaced or stripped. Previously PHI in
+  `_meta` reached the client with a "pass" report.
+- **Structured content and `_meta` are normalized with pydantic's serialization
+  before inspection**, so tuples, sets and bytes are inspected as they appear on the
+  wire; content that cannot be serialized fails closed.
+- **The reference email regex no longer has quadratic backtracking.** A ~20 KB
+  adversarial result previously blocked the event loop for over a second, and
+  `timeout_ms` cannot interrupt synchronous evaluators.
+- **Exceptions that replace another no longer chain it** (patient-context mapped
+  errors, OAuth errors, and the guardrail de-id, prompt and pattern-validation
+  paths), so PHI or secrets are not reachable through `__cause__` or `__context__`.
+- **A malformed 2xx OAuth response no longer echoes its body** (and any echoed
+  `client_secret`) through a pydantic `ValidationError`.
+
+### Bumped
+- Project version `0.0.6` → `0.1.0`.
+
 ## [0.0.6] - 2026-09-17
 
 ### Removed

@@ -1,58 +1,18 @@
+"""Authentication exception hierarchy for :mod:`hmcp.shared.auth`.
+
+`AuthenticationError` is the base class for every authentication failure
+raised by the OAuth client. `InvalidStateError` is the one subclass that is
+raised today: when an authorization redirect's `state` parameter is missing
+or does not match the expected value.
+"""
+
+
 class AuthenticationError(Exception):
-    """Base class for authentication errors"""
-
-    pass
-
-
-class InvalidTokenError(AuthenticationError):
-    """Error raised when token validation fails"""
-
-    pass
-
-
-class ClientValidationError(AuthenticationError):
-    """Error raised when client validation fails"""
-
-    pass
-
-
-class ScopeError(AuthenticationError):
-    """Error raised when scope validation fails"""
-
-    pass
-
-
-class InvalidCodeError(AuthenticationError):
-    """Error raised when authorization code validation fails"""
-
-    pass
-
-
-class InvalidPKCEError(AuthenticationError):
-    """Error raised when PKCE validation fails"""
-
-    pass
-
-
-class InvalidRedirectUriError(AuthenticationError):
-    """Error raised when redirect URI validation fails"""
-
-    pass
+    """Base class for authentication errors."""
 
 
 class InvalidStateError(AuthenticationError):
-    """Error raised when state parameter validation fails"""
-
-    pass
+    """Raised when an authorization redirect's state parameter is invalid."""
 
 
-class TokenExpiredError(AuthenticationError):
-    """Error raised when token has expired"""
-
-    pass
-
-
-class RefreshTokenError(AuthenticationError):
-    """Error raised when refresh token operation fails"""
-
-    pass
+__all__ = ["AuthenticationError", "InvalidStateError"]

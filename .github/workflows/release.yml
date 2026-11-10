@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  # Pushing a pre-release tag publishes to TestPyPI only. A tag push runs the
+  # workflow file of the tagged commit, so a dry run works before release.yml is
+  # on the default branch (manual runs require it there).
+  push:
+    tags:
+      - "v*rc*"
+      - "v*.dev*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Build the wheel and sdist
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
+      - name: Verify the release tag matches the built version
+        if: github.event_name == 'release' || github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as archive:
+              metadata = next(
+                  name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+              )
+              version = None
+              for line in archive.read(metadata).decode("utf-8").splitlines():
+                  if line.startswith("Version:"):
+                      version = line.split(":", 1)[1].strip()
+                      break
+          if version is None:
+              raise SystemExit(f"no Version field in {metadata}")
+          tag = os.environ["RELEASE_TAG"]
+          expected = "v" + version
+          print(f"release tag: {tag}; built version: {version}")
+          if tag != expected:
+              raise SystemExit(f"release tag {tag!r} does not match built version {expected!r}")
+          PY
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/innovaccer-hmcp/
+    permissions:
+      id-token: write # OIDC token for PyPI Trusted Publishing; no API token is stored
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/innovaccer-hmcp/
+    permissions:
+      id-token: write # OIDC token for PyPI Trusted Publishing; no API token is stored
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/

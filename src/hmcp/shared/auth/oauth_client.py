@@ -2,7 +2,7 @@
 
 Rewritten for mcp 1.27+ standards:
 
-  - Uses **httpx** (consistent with the rest of the stack; drops aiohttp).
+  - Uses **httpx2** (consistent with mcp 2.x; drops aiohttp).
   - Discovers endpoints via RFC 8414
     `/.well-known/oauth-authorization-server` instead of hard-coding
     `/oauth/token`, `/oauth/register`, etc.
@@ -24,24 +24,59 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 import secrets
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 from mcp.shared.auth import (
     OAuthClientInformationFull,
     OAuthMetadata,
     OAuthToken,
 )
 
-from .exceptions import AuthenticationError
+from .exceptions import AuthenticationError, InvalidStateError
 
 logger = logging.getLogger(__name__)
 
 
 _METADATA_PATH = "/.well-known/oauth-authorization-server"
+
+# RFC 6749 error codes are short lowercase tokens; anything else is untrusted.
+_ERROR_CODE_RE = re.compile(r"^[a-z_]{1,64}$")
+
+
+def _valid_oauth_error_code(value: Any) -> Optional[str]:
+    """Return `value` when it is a valid RFC 6749 error-code token, else None.
+
+    RFC 6749 error codes are short lowercase tokens; anything else is
+    untrusted and is never surfaced in a message.
+    """
+    if isinstance(value, str) and _ERROR_CODE_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _oauth_error_suffix(response: httpx2.Response) -> str:
+    """Return ``" (error_code)"`` for a JSON body carrying a valid RFC 6749
+    ``error`` string, else an empty string.
+
+    Never includes any other part of the body: an authorization server may
+    echo the submitted request (including ``client_secret``), so only the
+    validated ``error`` code is ever surfaced in a message.
+    """
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    code = _valid_oauth_error_code(payload.get("error"))
+    if code is not None:
+        return f" ({code})"
+    return ""
 
 
 class OAuthClient:
@@ -49,7 +84,7 @@ class OAuthClient:
 
     Lifecycle:
       ``async with OAuthClient(...) as oc:``
-        - opens an httpx client
+        - opens an httpx2 client
         - on first use, discovers endpoints from
           `/.well-known/oauth-authorization-server`
         - all subsequent calls hit the discovered URLs
@@ -69,6 +104,9 @@ class OAuthClient:
 
     Dynamic registration is via `register_client(...)`, which posts an
     `OAuthClientMetadata` to `/register` per RFC 7591.
+
+    The client does not track token expiry (`OAuthToken` carries only the
+    relative `expires_in`) and never refreshes automatically.
     """
 
     def __init__(
@@ -80,6 +118,7 @@ class OAuthClient:
         *,
         timeout_s: float = 30.0,
         metadata_path: str = _METADATA_PATH,
+        transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
@@ -87,6 +126,7 @@ class OAuthClient:
         self.server_url = server_url.rstrip("/")
         self.timeout_s = timeout_s
         self.metadata_path = metadata_path
+        self._transport = transport
 
         # Populated by `_ensure_metadata()` on first call.
         self._metadata: Optional[OAuthMetadata] = None
@@ -96,12 +136,14 @@ class OAuthClient:
         # consumed by `exchange_code_for_token`.
         self.code_verifier: Optional[str] = None
 
-        self._http: Optional[httpx.AsyncClient] = None
+        self._http: Optional[httpx2.AsyncClient] = None
 
     # --- async context-manager lifecycle ---------------------------------
 
     async def __aenter__(self) -> "OAuthClient":
-        self._http = httpx.AsyncClient(timeout=self.timeout_s)
+        self._http = httpx2.AsyncClient(
+            timeout=self.timeout_s, transport=self._transport
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -116,6 +158,9 @@ class OAuthClient:
 
         Idempotent. First call hits the network; subsequent calls return
         the cached doc.
+
+        Raises `RuntimeError` outside the async context manager and
+        `AuthenticationError` if the metadata request fails.
         """
         if self._metadata is not None:
             return self._metadata
@@ -127,14 +172,25 @@ class OAuthClient:
         self._require_session()
         assert self._http is not None
         url = f"{self.server_url}{self.metadata_path}"
+        auth_error: Optional[AuthenticationError] = None
         try:
             r = await self._http.get(url)
             r.raise_for_status()
         except Exception as e:
-            raise AuthenticationError(
+            auth_error = AuthenticationError(
                 f"OAuth metadata fetch failed for {url}: {e}"
-            ) from e
-        self._metadata = OAuthMetadata.model_validate(r.json())
+            )
+        if auth_error is not None:
+            raise auth_error
+        document_error: Optional[AuthenticationError] = None
+        try:
+            self._metadata = OAuthMetadata.model_validate(r.json())
+        except ValueError:
+            document_error = AuthenticationError(
+                "OAuth metadata response was not a valid metadata document"
+            )
+        if document_error is not None:
+            raise document_error
         logger.debug("OAuth metadata: %s", self._metadata.model_dump())
         return self._metadata
 
@@ -146,6 +202,8 @@ class OAuthClient:
         Side effect: stashes the verifier on `self.code_verifier` so
         `exchange_code_for_token` can find it without the caller having
         to thread it through.
+
+        Raises nothing.
         """
         verifier = secrets.token_urlsafe(32)
         challenge = (
@@ -165,14 +223,29 @@ class OAuthClient:
         grant_types: Optional[List[str]] = None,
         scope: Optional[str] = None,
         client_name: Optional[str] = None,
-        token_endpoint_auth_method: str = "client_secret_basic",
+        token_endpoint_auth_method: str = "client_secret_post",
     ) -> OAuthClientInformationFull:
         """Register this client with the authorization server.
 
         Returns the fully-populated `OAuthClientInformationFull` and
         stores the issued `client_id` / `client_secret` on `self` so
         subsequent token requests can use them.
+
+        `token_endpoint_auth_method` must be `"client_secret_post"`
+        (the default: the secret travels in the token-request body) or
+        `"none"` (a public client that authenticates with PKCE only).
+        Any other value raises `ValueError` before any request is made.
+        HTTP Basic client authentication is not implemented.
+
+        Raises `RuntimeError` outside the async context manager and
+        `AuthenticationError` if the server advertises no
+        `registration_endpoint` or the registration request fails.
         """
+        if token_endpoint_auth_method not in ("client_secret_post", "none"):
+            raise ValueError(
+                "token_endpoint_auth_method must be one of "
+                "'client_secret_post', 'none'"
+            )
         self._require_session()
         meta = await self._ensure_metadata()
         endpoint = meta.registration_endpoint
@@ -195,15 +268,29 @@ class OAuthClient:
             body["client_name"] = client_name
 
         assert self._http is not None
+        auth_error: Optional[AuthenticationError] = None
         try:
             r = await self._http.post(str(endpoint), json=body)
             r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise AuthenticationError(
-                f"OAuth /register HTTP {e.response.status_code}: "
-                f"{e.response.text[:300]}"
-            ) from e
-        info = OAuthClientInformationFull.model_validate(r.json())
+        except httpx2.HTTPStatusError as e:
+            auth_error = AuthenticationError(
+                f"OAuth /register HTTP {e.response.status_code}"
+                f"{_oauth_error_suffix(e.response)}"
+            )
+        if auth_error is not None:
+            raise auth_error
+        document_error: Optional[AuthenticationError] = None
+        info: Optional[OAuthClientInformationFull] = None
+        try:
+            info = OAuthClientInformationFull.model_validate(r.json())
+        except ValueError:
+            document_error = AuthenticationError(
+                "OAuth /register response was not a valid client "
+                "registration document"
+            )
+        if document_error is not None:
+            raise document_error
+        assert info is not None
         self.client_id = info.client_id
         if info.client_secret:
             self.client_secret = info.client_secret
@@ -221,6 +308,10 @@ class OAuthClient:
         authorization_code + refresh_token grants). We use the metadata
         document's `token_endpoint` if it ends with `/token`, and try
         `/token/m2m` as a fallback. Caches the result on `self.token`.
+
+        Raises `AuthenticationError` if `client_id`/`client_secret` are
+        missing or the token request fails, and `RuntimeError` outside the
+        async context manager.
         """
         if not self.client_id or not self.client_secret:
             raise AuthenticationError(
@@ -244,9 +335,12 @@ class OAuthClient:
             if token_url.endswith("/token")
             else f"{self.server_url}/token/m2m"
         )
+        token: Optional[OAuthToken] = None
         try:
             token = await self._token_request(m2m_url, data)
         except AuthenticationError:
+            pass
+        if token is None:
             # Fall back to the canonical endpoint (older gateways that
             # accept client_credentials at /token).
             token = await self._token_request(token_url, data)
@@ -259,6 +353,8 @@ class OAuthClient:
         """Backward-compat wrapper. Mints + caches a token via
         client_credentials. Older callers (e.g. `HMCPClientConnector`)
         invoke this and then read `self.access_token` / `self.token`.
+
+        Raises the same errors as `get_client_credentials_token`.
         """
         await self.get_client_credentials_token(scopes=scopes)
 
@@ -268,11 +364,17 @@ class OAuthClient:
     def access_token(self) -> Optional[str]:
         """Mirror the v0 attribute. Older code reads `oc.access_token`
         directly; the new API stores tokens under `self.token` (typed).
+
+        Raises nothing.
         """
         return self.token.access_token if self.token else None
 
     @property
     def refresh_token(self) -> Optional[str]:
+        """Most-recently-issued refresh token, or None if there is none.
+
+        Raises nothing.
+        """
         return self.token.refresh_token if self.token else None
 
     # --- authorization_code grant ---------------------------------------
@@ -287,7 +389,12 @@ class OAuthClient:
 
         Returns `(authorization_url, state, code_verifier)`. The caller
         captures the redirected-back `code`, then calls
-        `exchange_code_for_token`.
+        `exchange_code_for_token`. Keep the returned `state` and pass it
+        back as `expected_state` to `parse_authorization_response` so the
+        redirect is verified against CSRF.
+
+        Raises `AuthenticationError` if no `client_id` is set and
+        `RuntimeError` outside the async context manager.
         """
         if not self.client_id:
             raise AuthenticationError(
@@ -315,14 +422,18 @@ class OAuthClient:
 
         If `code_verifier` is None, uses the one stashed by
         `start_authorization_code_flow`.
+
+        Raises `RuntimeError` outside the async context manager and
+        `AuthenticationError` if no code verifier is available or the
+        token request fails.
         """
+        self._require_session()
         verifier = code_verifier or self.code_verifier
         if verifier is None:
             raise AuthenticationError(
                 "code_verifier required (run start_authorization_code_flow first "
                 "or pass verifier explicitly)"
             )
-        self._require_session()
         meta = await self._ensure_metadata()
         data: Dict[str, Any] = {
             "grant_type": "authorization_code",
@@ -342,6 +453,16 @@ class OAuthClient:
     async def refresh_access_token(
         self, refresh_token: Optional[str] = None
     ) -> OAuthToken:
+        """Exchange a refresh token for a fresh access token.
+
+        Uses the cached refresh token when `refresh_token` is not given.
+        If the server does not rotate the refresh token, the one just
+        used is kept.
+
+        Raises `AuthenticationError` if no refresh token is available or
+        the request fails, and `RuntimeError` outside the async context
+        manager.
+        """
         rt = refresh_token or (self.token.refresh_token if self.token else None)
         if rt is None:
             raise AuthenticationError("No refresh_token available")
@@ -357,13 +478,20 @@ class OAuthClient:
         if self.scopes:
             data["scope"] = " ".join(self.scopes)
         token = await self._token_request(str(meta.token_endpoint), data)
+        if token.refresh_token is None:
+            token = token.model_copy(update={"refresh_token": rt})
         self.token = token
         return token
 
     async def revoke_token(
         self, token: Optional[str] = None, token_type_hint: Optional[str] = None
     ) -> None:
-        """Revoke a token per RFC 7009."""
+        """Revoke a token per RFC 7009.
+
+        Raises `AuthenticationError` if there is no token to revoke, the
+        server advertises no `revocation_endpoint`, or the request fails,
+        and `RuntimeError` outside the async context manager.
+        """
         target = token or (self.token.access_token if self.token else None)
         if target is None:
             raise AuthenticationError("No token to revoke")
@@ -386,13 +514,16 @@ class OAuthClient:
         r = await self._http.post(str(endpoint), data=data)
         if r.status_code >= 400:
             raise AuthenticationError(
-                f"OAuth /revoke HTTP {r.status_code}: {r.text[:200]}"
+                f"OAuth /revoke HTTP {r.status_code}{_oauth_error_suffix(r)}"
             )
 
     # --- header helpers --------------------------------------------------
 
     def get_auth_header(self) -> Dict[str, str]:
-        """Authorization header for resource-server requests."""
+        """Authorization header for resource-server requests.
+
+        Raises `AuthenticationError` if no access token has been acquired.
+        """
         if not self.token or not self.token.access_token:
             raise AuthenticationError("Not authenticated — no access_token")
         return {"Authorization": f"Bearer {self.token.access_token}"}
@@ -402,12 +533,40 @@ class OAuthClient:
     @staticmethod
     def parse_authorization_response(
         redirect_url: str,
+        *,
+        expected_state: Optional[str] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Extract `(code, state)` from a redirect URL."""
+        """Extract `(code, state)` from an authorization redirect URL.
+
+        Pass the `state` returned by `start_authorization_code_flow` as
+        `expected_state` to have it checked (RFC 6749 section 10.12); a
+        missing or mismatched `state` raises `InvalidStateError`.
+
+        A redirect carrying an `error` parameter raises
+        `AuthenticationError`. The code is named only when it is a valid
+        RFC 6749 token; otherwise a fixed message is used. The
+        `error_description` and `error_uri` values are never included.
+
+        Without `expected_state` and without an error, the return value
+        is unchanged.
+        """
         parsed_url = urlparse(redirect_url)
         query_params = parse_qs(parsed_url.query)
-        code = query_params.get("code", [None])[0]
         state = query_params.get("state", [None])[0]
+        if expected_state is not None and (
+            state is None
+            or not secrets.compare_digest(
+                state.encode("utf-8"), expected_state.encode("utf-8")
+            )
+        ):
+            raise InvalidStateError("OAuth state mismatch")
+        raw_error = query_params.get("error", [None])[0]
+        if raw_error is not None:
+            error = _valid_oauth_error_code(raw_error)
+            if error is not None:
+                raise AuthenticationError(f"OAuth authorization error: {error}")
+            raise AuthenticationError("OAuth authorization error")
+        code = query_params.get("code", [None])[0]
         return code, state
 
     # --- internals -------------------------------------------------------
@@ -421,6 +580,7 @@ class OAuthClient:
 
     async def _token_request(self, url: str, data: Dict[str, Any]) -> OAuthToken:
         assert self._http is not None
+        auth_error: Optional[AuthenticationError] = None
         try:
             r = await self._http.post(
                 url,
@@ -428,9 +588,22 @@ class OAuthClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise AuthenticationError(
-                f"OAuth /token HTTP {e.response.status_code}: "
-                f"{e.response.text[:300]}"
-            ) from e
-        return OAuthToken.model_validate(r.json())
+        except httpx2.HTTPStatusError as e:
+            auth_error = AuthenticationError(
+                f"OAuth /token HTTP {e.response.status_code}"
+                f"{_oauth_error_suffix(e.response)}"
+            )
+        if auth_error is not None:
+            raise auth_error
+        document_error: Optional[AuthenticationError] = None
+        token: Optional[OAuthToken] = None
+        try:
+            token = OAuthToken.model_validate(r.json())
+        except ValueError:
+            document_error = AuthenticationError(
+                "OAuth /token response was not a valid token document"
+            )
+        if document_error is not None:
+            raise document_error
+        assert token is not None
+        return token

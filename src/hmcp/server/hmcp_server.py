@@ -1,475 +1,293 @@
-from __future__ import annotations
-import logging
-from typing import Any, Literal, Protocol, Optional
-import mcp.types as types
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.context import RequestContext
-from mcp.server.lowlevel.server import NotificationOptions
-from mcp.server.sse import SseServerTransport
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
-from mcp.server.auth.middleware.bearer_auth import (
-    BearerAuthBackend,
-    RequireAuthMiddleware,
-)
-from mcp.server.auth.provider import OAuthAuthorizationServerProvider
-from mcp.server.streamable_http import EventStore
-from starlette.middleware import Middleware
-from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
-from starlette.routing import Mount, Route
-from starlette.types import Receive, Scope, Send
-from starlette.applications import Starlette
-from pydantic import RootModel, BaseModel
+"""HMCP server: a thin HMCP-specific layer over the MCP SDK's ``MCPServer``.
 
-# Configure logging for the HMCP server module
+HMCP 0.1.0 targets MCP spec 2026-07-28 and builds on
+:class:`mcp.server.mcpserver.MCPServer`. :class:`HMCPServer` adds:
+
+* authentication defaults -- when an :class:`~mcp.server.auth.settings.AuthSettings`
+  object is supplied without an explicit ``validate_token_resource``, it is
+  defaulted to ``True`` so RFC 8707 audience binding is enforced by default; and a
+  warning is logged once when the server is constructed with no authentication
+  configured at all;
+* patient context -- when a :class:`~hmcp.server.patient_context.PatientContextConfig`
+  is supplied, an outermost
+  :class:`~hmcp.server.patient_context.PatientContextExtension` is installed. Tools
+  can then declare a ``patient_scope``; the effective scope is written into each
+  tool's ``_meta`` so it is advertised, and the extension enforces the same scope at
+  call time. Patient-scoped tools fail closed without an opened context. The
+  extension is reachable through the :attr:`HMCPServer.patient_contexts` property;
+* guardrails -- when a :class:`~hmcp.server.guardrails.GuardrailsConfig` is supplied,
+  a :class:`~hmcp.server.guardrails.GuardrailsExtension` is installed inside the
+  patient-context extension, so guardrails always see the resolved patient context.
+  It is reachable through the :attr:`HMCPServer.guardrails` property; and
+* transport restriction -- only ``stdio`` and ``streamable-http`` are supported.
+  HTTP+SSE was deprecated by MCP 2026-07-28 and is rejected by HMCP 0.1.0.
+
+Sampling was removed in HMCP 0.1.0 and is not offered by this server.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from typing import Any, Literal, Sequence
+
+from mcp.server.auth.provider import OAuthAuthorizationServerProvider, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.extension import Extension
+from mcp.server.mcpserver import MCPServer
+from mcp.types import Icon, ToolAnnotations
+
+from hmcp.server.guardrails import GuardrailsConfig, GuardrailsExtension
+from hmcp.server.patient_context import (
+    PatientContextConfig,
+    PatientContextExtension,
+)
+from hmcp.shared.constants import META_SCOPE, PATIENT_CONTEXT_EXTENSION
+from hmcp.shared.types import ToolPatientScope
+
 logger = logging.getLogger(__name__)
 
-# Use the MCP SDK's CreateMessageRequest instead of defining a custom one
-# This ensures compatibility with the standard MCP protocol
-CreateMessageRequest = types.CreateMessageRequest
+# The only patient scopes a tool may declare.
+_VALID_PATIENT_SCOPES: tuple[ToolPatientScope, ...] = ("patient", "population", "none")
 
-# Extended server result type to include CreateMessageResult
-# This dynamically extends the MCP ServerResult type to support HMCP's extended functionality
-new_server_result_base = RootModel[
-    types.EmptyResult
-    | types.InitializeResult
-    | types.CompleteResult
-    | types.GetPromptResult
-    | types.ListPromptsResult
-    | types.ListResourcesResult
-    | types.ListResourceTemplatesResult
-    | types.ReadResourceResult
-    | types.CallToolResult
-    | types.ListToolsResult
-    | types.CreateMessageResult
-]
+# Raised whenever an HTTP+SSE transport is requested. It must mention the spec
+# revision that deprecated SSE.
+_SSE_UNSUPPORTED_MESSAGE = (
+    "HTTP+SSE transport is deprecated by MCP 2026-07-28 and is not supported in "
+    'HMCP 0.1.0; use "streamable-http".'
+)
 
-# Dynamically create a new class that extends the base ServerResult with our additions
-types.ServerResult = type("ServerResult", (new_server_result_base,), {})
-
-# Update the ClientRequest type to use our custom CreateMessageRequest
-types.ClientRequest = RootModel[
-    types.PingRequest
-    | types.InitializeRequest
-    | types.CompleteRequest
-    | types.SetLevelRequest
-    | types.GetPromptRequest
-    | types.ListPromptsRequest
-    | types.ListResourcesRequest
-    | types.ListResourceTemplatesRequest
-    | types.ReadResourceRequest
-    | types.SubscribeRequest
-    | types.UnsubscribeRequest
-    | types.CallToolRequest
-    | types.ListToolsRequest
-    | CreateMessageRequest
-]
-
-types.StopReason = Literal["endTurn", "stopSequence", "maxTokens", "infoNeeded"] | str
+# Logged once when patient context is configured on a server that has no
+# authentication and left allow_unauthenticated at its default False: with no
+# principal every patient-context request is denied up front.
+_PATIENT_CONTEXT_NO_AUTH_WARNING = (
+    "patient_context is configured but the server has no authentication (no "
+    "token_verifier and no auth_server_provider) and allow_unauthenticated is "
+    "False: every patient-context request (open/get/close and every patient- or "
+    "population-scoped tool call) will be denied with PATIENT_NOT_AUTHORIZED. "
+    "Configure a token_verifier (with auth) so callers can authenticate, or for "
+    "local development set PatientContextConfig(allow_unauthenticated=True) and "
+    "supply a policy that permits anonymous callers: the default "
+    "SmartLaunchPolicy still denies because there is no token to carry a SMART "
+    "patient-launch claim."
+)
 
 
-class SamplingFnT(Protocol):
-    """
-    Protocol defining the signature for sampling callback functions.
+class HMCPServer(MCPServer):
+    """``MCPServer`` with HMCP's auth defaults, patient context and transport rule.
 
-    Sampling callbacks must accept a context and parameters, and return either
-    a message result or an error. This protocol ensures type safety when implementing
-    custom sampling handlers.
-
-    Args:
-        context: The request context containing metadata about the client request
-        params: Parameters for the sampling operation including messages and generation settings
-
-    Returns:
-        Either a successful CreateMessageResult or an ErrorData object
-    """
-
-    async def __call__(
-        self,
-        context: RequestContext[Any, Any],
-        params: types.CreateMessageRequestParams,
-    ) -> types.CreateMessageResult | types.ErrorData: ...
-
-
-async def _default_sampling_callback(
-    context: RequestContext[Any, Any],
-    params: types.CreateMessageRequestParams,
-) -> types.CreateMessageResult | types.ErrorData:
-    """
-    Default sampling callback that returns an error indicating sampling is not supported.
-
-    This is used when no custom sampling callback is provided to the server.
-    It ensures that clients receive a meaningful error message rather than
-    a method-not-implemented error.
-
-    Args:
-        context: The request context (unused in the default implementation)
-        params: The sampling parameters (unused in the default implementation)
-
-    Returns:
-        An ErrorData object with an appropriate error message
-    """
-    return types.ErrorData(
-        code=types.INVALID_REQUEST,
-        message="Sampling not supported",
-    )
-
-
-class HMCPServer(FastMCP):
-    """
-    HMCP Server extends the FastMCP Server with sampling capability.
-
-    This class provides an implementation of the HMCP (Healthcare Model Context Protocol)
-    server that adds text generation capabilities on top of the standard MCP protocol.
-    HMCP servers can handle CreateMessageRequest messages from clients and generate
-    text completions based on provided prompts and context.
-
-    The server advertises its sampling capabilities to clients during initialization
-    and provides a flexible API for implementing custom sampling logic through
-    callback functions.
+    See the module docstring for exactly what this subclass adds.
     """
 
     def __init__(
         self,
         name: str,
-        host: str = "127.0.0.1",
-        port: int = 8060,
-        debug: bool = False,
-        log_level: str = "INFO",
-        version: str | None = None,
+        *,
+        version: str = "",
         instructions: str | None = None,
-        auth_server_provider: (
-            OAuthAuthorizationServerProvider[Any, Any, Any] | None
-        ) = None,
-        event_store: EventStore | None = None,
-        samplingCallback: SamplingFnT | None = None,
-        *args,
-        **kwargs,
-    ):
-        """
-        Initialize the HMCP Server.
+        token_verifier: TokenVerifier | None = None,
+        auth: AuthSettings | None = None,
+        auth_server_provider: OAuthAuthorizationServerProvider | None = None,
+        extensions: Sequence[Extension] | None = None,
+        patient_context: PatientContextConfig | None = None,
+        guardrails: GuardrailsConfig | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Tools passed to the MCPServer constructor bypass add_tool, so their
+        # patient scope would never be written to _meta: the advertised scope
+        # would then differ from the enforced scope. Refuse that combination.
+        if patient_context is not None and kwargs.get("tools") is not None:
+            raise ValueError(
+                "register tools with add_tool()/tool() when patient_context is "
+                "configured, not via the MCPServer 'tools=' argument: 'tools=' "
+                "bypasses add_tool, so the advertised patient scope would differ "
+                "from the enforced scope."
+            )
 
-        Args:
-            name: The name of the server that will be reported to clients
-            version: The version of the server (optional), used for compatibility checks
-            instructions: Human-readable instructions for using the server (optional)
-            samplingCallback: A callback function to handle sampling requests (optional)
-                              If not provided, the server will return errors for sampling requests
-            **kwargs: Additional settings to pass to the underlying FastMCP implementation
-                       These can include configuration for logging, transports, etc.
-        """
-        # Initialize the parent FastMCP server with standard settings
+        # Enforce RFC 8707 audience binding by default, without model_copy (which
+        # skips AuthSettings validators and could report binding ON while nothing
+        # is checked). An explicit False is kept as-is; audience binding is only
+        # meaningful with a resource_server_url.
+        if auth is not None and auth.validate_token_resource is not False:
+            if auth.resource_server_url is None:
+                raise ValueError(
+                    "HMCP needs resource_server_url to audience-bind tokens per "
+                    "RFC 8707; set validate_token_resource=False only if the token "
+                    "verifier checks the token's audience itself."
+                )
+            if auth.validate_token_resource is None:
+                auth = AuthSettings.model_validate(
+                    {**auth.model_dump(), "validate_token_resource": True}
+                )
+
+        # Patient context is set up before super().__init__ so add_tool (which the
+        # SDK may call while initializing) can already see the configuration.
+        self._patient_context_config = patient_context
+        self._patient_context_extension = (
+            PatientContextExtension(patient_context, scope_for=self._scope_for)
+            if patient_context is not None
+            else None
+        )
+        self._guardrails_config = guardrails
+        self._guardrails_extension = (
+            GuardrailsExtension(guardrails, scope_for=self._scope_for)
+            if guardrails is not None
+            else None
+        )
+
+        # Extension order: patient context outermost, then guardrails (so it sees
+        # the resolved context), then the caller's extensions.
+        combined_extensions: list[Extension] = []
+        if self._patient_context_extension is not None:
+            combined_extensions.append(self._patient_context_extension)
+        if self._guardrails_extension is not None:
+            combined_extensions.append(self._guardrails_extension)
+        if extensions:
+            combined_extensions.extend(extensions)
+
+        if token_verifier is None and auth_server_provider is None:
+            logger.warning("HMCP server running without authentication")
+            if (
+                patient_context is not None
+                and not patient_context.allow_unauthenticated
+            ):
+                logger.warning(_PATIENT_CONTEXT_NO_AUTH_WARNING)
+
         super().__init__(
-            name=name,
+            name,
+            version=version,
             instructions=instructions,
+            token_verifier=token_verifier,
+            auth=auth,
             auth_server_provider=auth_server_provider,
-            event_store=event_store,
-            host=host,
-            port=port,
-            debug=debug,
-            log_level=log_level,
-            *args,
+            extensions=combined_extensions or None,
             **kwargs,
         )
 
-        # Define experimental capabilities with sampling for advertisement to clients
-        # This allows clients to detect that this server supports HMCP sampling features
-        self.experimentalCapabilities = {
-            "hmcp": {
-                "sampling": True,
-                "version": "0.1.0",
-            }
-        }
+    # -- patient context -------------------------------------------------
 
-        # Store the sampling callback or use the default one if none provided
-        # The callback will be invoked whenever a CreateMessageRequest is received
-        self._samplingCallback = samplingCallback or _default_sampling_callback
+    @property
+    def patient_contexts(self) -> PatientContextExtension | None:
+        """The installed patient-context extension, or ``None`` if not configured."""
+        return self._patient_context_extension
 
-        # Register the handler for processing CreateMessageRequest messages
-        self._registerSamplingHandler()
+    @property
+    def guardrails(self) -> GuardrailsExtension | None:
+        """The installed guardrails extension, or ``None`` if not configured."""
+        return self._guardrails_extension
 
-        # Override the get_capabilities method to include our custom capabilities
-        # This is necessary to add sampling capabilities to the server's advertised features
-        self._original_get_capabilities = self._mcp_server.get_capabilities
-        self._mcp_server.get_capabilities = self.patched_get_capabilities
-
-    # TODO: // Need to ask kuldeep if we can remove this as its same as fast-mcp method
-    def sse_app(self, mount_path: str | None = None) -> Starlette:
-        """Return an instance of the SSE server app."""
-
-        # Update mount_path in settings if provided
-        if mount_path is not None:
-            self.settings.mount_path = mount_path
-
-        # Create normalized endpoint considering the mount path
-        normalized_message_endpoint = self._normalize_path(
-            self.settings.mount_path, self.settings.message_path
+    def add_tool(
+        self,
+        fn: Callable[..., Any],
+        name: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        annotations: ToolAnnotations | None = None,
+        icons: list[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
+        structured_output: bool | None = None,
+        *,
+        patient_scope: ToolPatientScope | None = None,
+    ) -> None:
+        """Register a tool, writing its effective patient scope into its ``_meta``."""
+        if patient_scope is not None and patient_scope not in _VALID_PATIENT_SCOPES:
+            raise ValueError(
+                f"patient_scope must be one of {_VALID_PATIENT_SCOPES}; "
+                f"got {patient_scope!r}"
+            )
+        config: PatientContextConfig | None = getattr(
+            self, "_patient_context_config", None
+        )
+        if patient_scope is not None and config is None:
+            raise ValueError(
+                "patient_scope requires a configured patient_context; construct "
+                "HMCPServer(..., patient_context=PatientContextConfig(...))"
+            )
+        if config is not None:
+            scope = patient_scope or config.default_tool_scope
+            merged = dict(meta or {})
+            nested = dict(merged.get(PATIENT_CONTEXT_EXTENSION) or {})
+            nested[META_SCOPE] = scope
+            merged[PATIENT_CONTEXT_EXTENSION] = nested
+            meta = merged
+        super().add_tool(
+            fn,
+            name=name,
+            title=title,
+            description=description,
+            annotations=annotations,
+            icons=icons,
+            meta=meta,
+            structured_output=structured_output,
         )
 
-        # Set up auth context and dependencies
-
-        sse = SseServerTransport(
-            normalized_message_endpoint,
-        )
-
-        async def handle_sse(scope: Scope, receive: Receive, send: Send):
-            # Add client ID from auth context into request context if available
-
-            async with sse.connect_sse(
-                scope,
-                receive,
-                send,
-            ) as streams:
-                await self._mcp_server.run(
-                    streams[0],
-                    streams[1],
-                    self._mcp_server.create_initialization_options(),
-                )
-            return Response()
-
-        # Create routes
-        routes: list[Route | Mount] = []
-        middleware: list[Middleware] = []
-        required_scopes = []
-
-        # Add auth endpoints if auth provider is configured
-        if self._auth_server_provider:
-            assert self.settings.auth
-            from mcp.server.auth.routes import create_auth_routes
-
-            required_scopes = self.settings.auth.required_scopes or []
-
-            middleware = [
-                # extract auth info from request (but do not require it)
-                Middleware(
-                    AuthenticationMiddleware,
-                    backend=BearerAuthBackend(
-                        provider=self._auth_server_provider,
-                    ),
-                ),
-                # Add the auth context middleware to store
-                # authenticated user in a contextvar
-                Middleware(AuthContextMiddleware),
-            ]
-            routes.extend(
-                create_auth_routes(
-                    provider=self._auth_server_provider,
-                    issuer_url=self.settings.auth.issuer_url,
-                    service_documentation_url=self.settings.auth.service_documentation_url,
-                    client_registration_options=self.settings.auth.client_registration_options,
-                    revocation_options=self.settings.auth.revocation_options,
-                )
+    def tool(
+        self,
+        name: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        annotations: ToolAnnotations | None = None,
+        icons: list[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
+        structured_output: bool | None = None,
+        *,
+        patient_scope: ToolPatientScope | None = None,
+    ) -> Callable[[Any], Any]:
+        """Decorator form of :meth:`add_tool`; forwards ``patient_scope``."""
+        if callable(name):
+            raise TypeError(
+                "The @tool decorator was used incorrectly. Did you forget to call "
+                "it? Use @tool() instead of @tool"
             )
 
-        # When auth is not configured, we shouldn't require auth
-        if self._auth_server_provider:
-            # Auth is enabled, wrap the endpoints with RequireAuthMiddleware
-            routes.append(
-                Route(
-                    self.settings.sse_path,
-                    endpoint=RequireAuthMiddleware(handle_sse, required_scopes),
-                    methods=["GET"],
-                )
+        def decorator(fn: Any) -> Any:
+            self.add_tool(
+                fn,
+                name=name,
+                title=title,
+                description=description,
+                annotations=annotations,
+                icons=icons,
+                meta=meta,
+                structured_output=structured_output,
+                patient_scope=patient_scope,
             )
-            routes.append(
-                Mount(
-                    self.settings.message_path,
-                    app=RequireAuthMiddleware(sse.handle_post_message, required_scopes),
-                )
-            )
-        else:
-            # Auth is disabled, no need for RequireAuthMiddleware
-            # Since handle_sse is an ASGI app, we need to create a compatible endpoint
-            async def sse_endpoint(request: Request) -> Response:
-                # Convert the Starlette request to ASGI parameters
-                return await handle_sse(request.scope, request.receive, request._send)  # type: ignore[reportPrivateUsage]
-
-            routes.append(
-                Route(
-                    self.settings.sse_path,
-                    endpoint=sse_endpoint,
-                    methods=["GET"],
-                )
-            )
-            routes.append(
-                Mount(
-                    self.settings.message_path,
-                    app=sse.handle_post_message,
-                )
-            )
-        # mount these routes last, so they have the lowest route matching precedence
-        routes.extend(self._custom_starlette_routes)
-
-        # Create Starlette app with routes and middleware
-        return Starlette(
-            debug=self.settings.debug, routes=routes, middleware=middleware
-        )
-
-    def streamable_http_app(self) -> Starlette:
-        """Return an instance of the StreamableHTTP server app."""
-        from starlette.middleware import Middleware
-        from starlette.routing import Mount
-
-        # Create session manager on first call (lazy initialization)
-        if self._session_manager is None:
-            self._session_manager = StreamableHTTPSessionManager(
-                app=self._mcp_server,
-                event_store=self._event_store,
-                json_response=self.settings.json_response,
-                stateless=self.settings.stateless_http,  # Use the stateless setting
-            )
-
-        # Create the ASGI handler
-        async def handle_streamable_http(
-            scope: Scope, receive: Receive, send: Send
-        ) -> None:
-            await self.session_manager.handle_request(scope, receive, send)
-
-        # Create routes
-        routes: list[Route | Mount] = []
-        middleware: list[Middleware] = []
-        required_scopes = []
-
-        # Add auth endpoints if auth provider is configured
-        if self._auth_server_provider:
-            assert self.settings.auth
-            from mcp.server.auth.routes import create_auth_routes
-
-            required_scopes = self.settings.auth.required_scopes or []
-
-            middleware = [
-                Middleware(
-                    AuthenticationMiddleware,
-                    backend=BearerAuthBackend(
-                        provider=self._auth_server_provider,
-                    ),
-                ),
-                Middleware(AuthContextMiddleware),
-            ]
-            routes.extend(
-                create_auth_routes(
-                    provider=self._auth_server_provider,
-                    issuer_url=self.settings.auth.issuer_url,
-                    service_documentation_url=self.settings.auth.service_documentation_url,
-                    client_registration_options=self.settings.auth.client_registration_options,
-                    revocation_options=self.settings.auth.revocation_options,
-                )
-            )
-            routes.append(
-                Mount(
-                    self.settings.streamable_http_path,
-                    app=RequireAuthMiddleware(handle_streamable_http, required_scopes),
-                )
-            )
-        else:
-            # Auth is disabled, no wrapper needed
-            routes.append(
-                Mount(
-                    self.settings.streamable_http_path,
-                    app=handle_streamable_http,
-                )
-            )
-
-        routes.extend(self._custom_starlette_routes)
-
-        return Starlette(
-            debug=self.settings.debug,
-            routes=routes,
-            middleware=middleware,
-            lifespan=lambda app: self.session_manager.run(),
-        )
-
-    def _registerSamplingHandler(self):
-        """Register the handler for CreateMessageRequest."""
-
-        async def samplingHandler(req: types.CreateMessageRequest):
-            """Handle sampling/createMessage requests."""
-
-            try:
-                # Get the current request context
-                ctx = self._mcp_server.request_context
-
-                # Process the request using the registered sampling callback
-                response = await self._samplingCallback(ctx, req.params)
-
-                # Return the response directly if it's an error, otherwise wrap it in a ServerResult
-                if isinstance(response, types.ErrorData):
-                    return response
-                else:
-                    return types.ServerResult(response)
-
-            except Exception as e:
-                logger.error(f"Error in sampling handler: {str(e)}")
-                return types.ErrorData(
-                    code=types.INTERNAL_ERROR,
-                    message=f"Error processing sampling request: {str(e)}",
-                )
-
-        # Register our handler for CreateMessageRequest type
-        self._mcp_server.request_handlers[CreateMessageRequest] = samplingHandler
-
-    def sampling(self):
-        """
-        Decorator to register a sampling callback function.
-
-        This provides a convenient way to define the sampling logic for the server.
-        The decorated function will be called whenever the server receives a
-        CreateMessageRequest.
-
-        Returns:
-            A decorator function that registers the decorated function as the sampling callback
-
-        Example:
-            @hmcp_server.sampling()
-            async def handle_sampling(context, params):
-                # Generate a response based on the messages in params.messages
-                return types.CreateMessageResult(
-                    message=types.SamplingMessage(
-                        role="assistant",
-                        content="Generated response here"
-                    )
-                )
-        """
-
-        def decorator(func: SamplingFnT):
-            logger.debug("Registering sampling handler")
-            self._samplingCallback = func
-            return func
+            return fn
 
         return decorator
 
-    def patched_get_capabilities(
-        self,
-        notification_options: NotificationOptions,
-        experimental_capabilities: dict[str, dict[str, Any]],
-    ) -> types.ServerCapabilities:
-        """
-        Override the get_capabilities method to provide custom HMCP capabilities.
-
-        This method extends the standard MCP capabilities with HMCP-specific
-        capabilities, allowing clients to discover the server's sampling features.
-
-        Args:
-            notification_options: Options for configuring server notifications
-            experimental_capabilities: Additional experimental capabilities to include
-
-        Returns:
-            ServerCapabilities object with HMCP sampling capabilities included
-        """
-        # Call the parent class method to get standard capabilities
-        capabilities = self._original_get_capabilities(
-            notification_options, experimental_capabilities
+    def _scope_for(self, name: str) -> ToolPatientScope:
+        """Return the scope registered for ``name`` (advertised == enforced)."""
+        config: PatientContextConfig | None = getattr(
+            self, "_patient_context_config", None
         )
+        default: ToolPatientScope = (
+            config.default_tool_scope if config is not None else "patient"
+        )
+        tool = self._tool_manager.get_tool(name)
+        if tool is not None and tool.meta:
+            nested = tool.meta.get(PATIENT_CONTEXT_EXTENSION)
+            if isinstance(nested, dict) and META_SCOPE in nested:
+                return nested[META_SCOPE]
+        return default
 
-        # Add custom HMCP-specific capabilities to the experimental section
-        # This advertises the server's sampling functionality to clients
-        capabilities.experimental = {
-            **capabilities.experimental,
-            **self.experimentalCapabilities,
-        }
+    # -- transport -------------------------------------------------------
 
-        logger.debug("Custom HMCP capabilities added: %s", capabilities.experimental)
+    def run(
+        self,
+        transport: Literal["stdio", "streamable-http"] = "stdio",
+        **kwargs: Any,
+    ) -> None:
+        """Run the server over a supported transport, rejecting HTTP+SSE."""
+        if transport == "sse":
+            raise ValueError(_SSE_UNSUPPORTED_MESSAGE)
+        if transport not in ("stdio", "streamable-http"):
+            raise ValueError(
+                f"unsupported transport {transport!r}; supported transports are "
+                "'stdio' and 'streamable-http'"
+            )
+        super().run(transport=transport, **kwargs)
 
-        return capabilities
+    def sse_app(self, *args: Any, **kwargs: Any) -> Any:
+        """HTTP+SSE is not offered by HMCP; always raises ``ValueError``."""
+        raise ValueError(_SSE_UNSUPPORTED_MESSAGE)

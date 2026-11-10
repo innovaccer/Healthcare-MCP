@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible bug in HMCP
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill this in with
+        **synthetic data only** — never include real patient data (PHI/PII),
+        credentials or tokens.
+
+        If you are reporting a security vulnerability, **stop**: do not open a public
+        issue. Follow the process in SECURITY.md instead.
+  - type: input
+    id: hmcp-version
+    attributes:
+      label: innovaccer-hmcp version
+      description: The installed version (for example, `0.1.0`).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.13.0"
+    validations:
+      required: true
+  - type: input
+    id: mcp-version
+    attributes:
+      label: mcp version
+      placeholder: "2.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - streamable-http
+        - not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest runnable snippet that shows the problem, using synthetic data only.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual behaviour
+      description: What you expected to happen, and what happened instead (include the full traceback if any).
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: This report contains no PHI, real patient data, credentials or tokens.
+          required: true
+        - label: This is not a security vulnerability (see SECURITY.md for how to report one privately).
+          required: true

@@ -1,24 +1,29 @@
-# HMCP OAuth Client
+# HMCP OAuth client
 
-A secure OAuth 2.0 client SDK for interacting with the HMCP OAuth server, supporting Client Credentials and Authorization Code flows with PKCE.
+An OAuth 2.1 client (OAuth 2.0 + PKCE) for HMCP that communicates with any OAuth 2.1 authorization server and supports the Client Credentials and Authorization Code flows with PKCE.
+
+`OAuthClient` discovers endpoints from the authorization server's RFC 8414
+`/.well-known/oauth-authorization-server` document instead of hard-coding them, uses
+`httpx2` (consistent with the MCP SDK), and returns typed `OAuthToken` objects from
+`mcp.shared.auth`.
 
 ## Features
 
-- **OAuth 2.0 Flows**
-  - Client Credentials Flow
-  - Authorization Code Flow with PKCE
-  - Refresh Token Flow
-  - Token Revocation
+- **OAuth 2.1 Flows (OAuth 2.0 + PKCE)**
+  - Client credentials flow
+  - Authorization code flow with PKCE (S256)
+  - Refresh token flow
+  - Token revocation (RFC 7009)
 
-- **Security Features**
+- **Protocol features**
   - PKCE implementation for Authorization Code flow
-  - Secure token storage
+  - Token cached in memory on the `OAuthClient` instance (no persistence or encryption)
   - State parameter for CSRF protection
   - Token revocation support
 
 ## Usage
 
-### Basic Setup
+### Basic setup
 
 ```python
 from hmcp.shared.auth.oauth_client import OAuthClient
@@ -33,7 +38,30 @@ async with OAuthClient(
     pass
 ```
 
-### Client Credentials Flow
+The client must be used as an async context manager: entering it opens the underlying
+HTTP client, and leaving it closes it.
+
+### HTTP client and the test seam
+
+The client is built on `httpx2`. `OAuthClient(...)` accepts a keyword-only `transport`
+argument of type `httpx2.AsyncBaseTransport`. It is a **test seam**: a mock transport can be
+passed to exercise the flows without network access. The same `transport` is accepted by
+`HMCPClientConnector(...)`, which forwards it to its OAuth client.
+
+```python
+import httpx2
+from hmcp.shared.auth.oauth_client import OAuthClient
+
+async with OAuthClient(
+    client_id="demo-client",
+    client_secret="demo-secret",
+    server_url="http://localhost:8050",
+    transport=httpx2.MockTransport(handler),
+) as client:
+    ...
+```
+
+### Client credentials flow
 
 ```python
 async with OAuthClient(
@@ -58,7 +86,7 @@ async with OAuthClient(
     # }
 ```
 
-### Authorization Code Flow with PKCE
+### Authorization code flow with PKCE
 
 ```python
 async with OAuthClient(
@@ -76,9 +104,13 @@ async with OAuthClient(
     # Redirect user to auth_url
     # After user authorization, you'll receive the code at your redirect URI
     
-    # Parse the redirect URL to get the code and state
-    code, returned_state = OAuthClient.parse_authorization_response(redirect_url)
-    # Compare returned_state against the `state` returned above for CSRF protection
+    # Parse the redirect URL to get the code and state. Pass the `state`
+    # returned above as `expected_state` so a missing or mismatched state is
+    # rejected with InvalidStateError (CSRF protection, RFC 6749 §10.12).
+    code, returned_state = OAuthClient.parse_authorization_response(
+        redirect_url,
+        expected_state=state,
+    )
     
     # Exchange code for token
     token_response = await client.exchange_code_for_token(
@@ -99,7 +131,7 @@ async with OAuthClient(
     # }
 ```
 
-### Refresh Token Flow
+### Refresh token flow
 
 ```python
 async with OAuthClient(
@@ -114,6 +146,8 @@ async with OAuthClient(
     
     # Refresh the token when needed. Called with no argument, the cached
     # refresh token is used; pass one explicitly if you manage it yourself.
+    # If the server does not rotate the refresh token, the one just used is
+    # kept on the returned token.
     refresh_response = await client.refresh_access_token()
     
     # `refresh_response` is an OAuthToken model with fields:
@@ -125,7 +159,11 @@ async with OAuthClient(
     # }
 ```
 
-### Token Revocation
+The client does not track token expiry (`OAuthToken` carries only the relative `expires_in`)
+and never refreshes automatically; call `refresh_access_token()` when a fresh token is
+required.
+
+### Token revocation
 
 ```python
 async with OAuthClient(
@@ -149,51 +187,49 @@ async with OAuthClient(
     )
 ```
 
-### Using with HMCP Client
+### Dynamic client registration (deprecated)
+
+`register_client()` performs RFC 7591 dynamic client registration against the
+authorization server's `registration_endpoint`. MCP **2026-07-28 deprecates dynamic client
+registration** in favor of **CIMD** (Client ID Metadata Document), in which the client's
+metadata is hosted at an HTTPS URL that also serves as its client identifier. CIMD is
+preferred; `register_client()` is used only against a server that still advertises a
+registration endpoint.
+The deprecation is a base-spec change; the method remains in the SDK.
+
+`register_client()` defaults `token_endpoint_auth_method` to `"client_secret_post"` (the
+secret travels in the token-request body, which is what the token requests actually send).
+It accepts only `"client_secret_post"` or `"none"` (a public client that authenticates with
+PKCE only); any other value raises `ValueError` before any request is made. HTTP Basic
+client authentication is not implemented.
 
 ```python
-from hmcp.client.hmcp_client import HMCPClient
-from hmcp.shared.auth.oauth_client import OAuthClient
-from mcp.client.sse import sse_client
-from mcp.types import SamplingMessage, TextContent
-from mcp import ClientSession
-
-async def connect_to_agent():
-    # Initialize OAuth client
-    async with OAuthClient(
-        client_id="your-client-id",
-        client_secret="your-client-secret",
-        server_url="http://localhost:8050"
-    ) as oauth_client:
-        # Get access token (cached on the client; read via get_auth_header() below)
-        token_response = await oauth_client.get_client_credentials_token()
-        
-        # Connect to HMCP server
-        async with sse_client(
-            "http://localhost:8050/sse",
-            headers=oauth_client.get_auth_header()
-        ) as (read, write):
-            async with ClientSession(read, write) as session:
-                client = HMCPClient(session)
-                
-                # Send a message
-                response = await client.create_message(messages=[
-                    SamplingMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text="Your message here"
-                        )
-                    )
-                ])
-                
-                # Process the response
-                print(response.content.text)
+info = await client.register_client(
+    redirect_uris=["http://localhost:8050/oauth/callback"],
+    token_endpoint_auth_method="client_secret_post",
+)
+# `info.client_id` and `info.client_secret` are stored on `client`.
 ```
 
-## Error Handling
+## Error handling
 
-The OAuth client raises `AuthenticationError` for various error conditions:
+The OAuth client raises `AuthenticationError` for OAuth error conditions. For an error
+response from the authorization server, the message carries only the HTTP status and, when
+the server returns one, the **validated RFC 6749 `error` code**. No other part of the
+response body is included, because an authorization server may echo the submitted request
+(including the `client_secret`).
+
+A failed token request therefore surfaces as, for example,
+`OAuth /token HTTP 401 (invalid_client)`. The `(error_code)` suffix appears only when the
+JSON body carries a short lowercase `error` string in the RFC 6749 form; anything else is
+dropped.
+
+`hmcp.shared.auth` exports exactly `OAuthClient`, `AuthenticationError`, and
+`InvalidStateError` (an `AuthenticationError` subclass, raised on a missing or mismatched
+authorization-response `state`). A 2xx response whose body is not valid JSON, or is not a
+valid token, metadata or client-registration document, also raises `AuthenticationError`,
+with a fixed message that does not include the body. An `AuthenticationError` never chains
+the underlying `httpx2` error: the HTTP error is not its `__cause__` or its `__context__`.
 
 ```python
 from hmcp.shared.auth.oauth_client import AuthenticationError
@@ -215,7 +251,7 @@ Common error scenarios:
 - Missing refresh token
 - Not authenticated (when getting auth header)
 
-## Best Practices
+## Best practices
 
 1. **Token Management**
    - Tokens are cached on the client automatically; read them via the `access_token` property
@@ -236,7 +272,7 @@ Common error scenarios:
    - Implement retry logic for network issues
 
 4. **Security**
-   - Keep client credentials secure
+   - Keep client credentials secret
    - Use HTTPS for all communications
    - Validate all responses
    - Implement proper token storage
@@ -246,10 +282,10 @@ Common error scenarios:
 
 1. Fork the repository
 2. Create a feature branch
-3. Commit your changes
+3. Commit the changes
 4. Push to the branch
 5. Create a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License; see the LICENSE file for details.

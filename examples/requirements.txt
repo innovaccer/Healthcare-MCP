@@ -1,5 +1,0 @@
-# External dependencies for examples
-openai-agents==0.0.14
-langchain-groq>=0.3.2
-langchain-openai>=0.3.14
-python-dotenv>=1.0.0
