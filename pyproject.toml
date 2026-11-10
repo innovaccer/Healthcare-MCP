@@ -1,29 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=25.1"]
+build-backend = "hatchling.build"
+
 [project]
-name = "hmcp"
-version = "0.0.6"
-description = "Healthcare MCP"
-readme = "README.md"
+name = "innovaccer-hmcp"
+dynamic = ["version", "readme"]
+description = "Healthcare Model Context Protocol (HMCP): patient-context and guardrails extensions for the Model Context Protocol"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Innovaccer" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "healthcare",
+    "hipaa",
+    "phi",
+    "guardrails",
+    "de-identification",
+    "smart-on-fhir",
+    "llm",
+    "agents",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Healthcare Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: AsyncIO",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
-    "asyncio>=3.4.3",
-    "mcp-use>=1.2.7",
-    "mcp[cli]==1.29.0",
-    "nest-asyncio>=1.6.0",
-    "uvicorn==0.34.3",
-    "starlette==0.49.1",
-    "cryptography>=41.0.0",
+    # Cap mcp at the next minor: HMCP builds on mcp.server.extension, a public API
+    # that is new in mcp 2.x and may change in a minor release, so a minor bump
+    # needs review.
+    "mcp>=2.3.0,<2.4",
+    "httpx2>=2.16,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.1",
-    "pytest-cov>=4.1.0",
-    "pytest-mock>=3.11.1",
-    "black==25.1.0"
+    "pytest>=8.3",
+    "pytest-asyncio>=0.26",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.11",
+    "jsonschema>=4.20",
+    "black==25.1.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/innovaccer/Healthcare-MCP"
+Repository = "https://github.com/innovaccer/Healthcare-MCP"
+Documentation = "https://github.com/innovaccer/Healthcare-MCP/tree/main/docs/specification"
+Issues = "https://github.com/innovaccer/Healthcare-MCP/issues"
+Changelog = "https://github.com/innovaccer/Healthcare-MCP/blob/main/CHANGELOG.md"
+Security = "https://github.com/innovaccer/Healthcare-MCP/blob/main/SECURITY.md"
 
 [tool.black]
 # Pin the target so formatting is identical across black versions. Without it,
@@ -31,9 +72,44 @@ dev = [
 # newer black may reformat for unreleased Python versions.
 target-version = ["py311"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.hatch.version]
+path = "src/hmcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hmcp"]
+exclude = [
+    "src/hmcp/README.md",
+    "src/hmcp/shared/auth/oauth_client_README.md",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/examples",
+    "/schema",
+    "/scripts",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/SECURITY.md",
+    "/CONTRIBUTING.md",
+    "/pytest.ini",
+]
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+# PyPI resolves relative links against pypi.org, so rewrite README links to files in
+# this repository to absolute GitHub URLs in the published long description only.
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '!\[([^\]]*)\]\((?!https?://|#|mailto:)([^)\s]+)\)'
+replacement = '![\1](https://raw.githubusercontent.com/innovaccer/Healthcare-MCP/main/\2)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
+replacement = '](https://github.com/innovaccer/Healthcare-MCP/blob/main/\1)'

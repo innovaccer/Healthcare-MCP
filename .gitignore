@@ -171,7 +171,9 @@ cython_debug/
 
 .DS_Store
 
-.github/
+# Ignore only the maintainer's local agent instructions; workflows, issue/PR
+# templates and dependabot config under .github/ are tracked.
+.github/copilot-instructions.md
 
 # Local agent working artifacts
 tasks/handover/

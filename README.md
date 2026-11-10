@@ -1,224 +1,218 @@
-![image info](./images/Innovaccer_HMCP_Github_banner.png)
+![HMCP banner](images/Innovaccer_HMCP_Github_banner.png)
 
 # Healthcare Model Context Protocol (HMCP)
 
-**_An open protocol enabling communication and interoperability between healthcare agentic applications._**
+[![CI](https://github.com/innovaccer/Healthcare-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/innovaccer/Healthcare-MCP/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/innovaccer-hmcp.svg)](https://pypi.org/project/innovaccer-hmcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/innovaccer-hmcp.svg)](https://pypi.org/project/innovaccer-hmcp/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Healthcare is rapidly embracing an AI-driven future. From ambient clinical documentation to decision support, generative AI agents hold immense promise to transform care delivery. However, as the industry swiftly moves to adopt AI-powered solutions, it faces a significant challenge: ensuring AI agents are secure, compliant, and seamlessly interoperable within real-world healthcare environments.
+**_HMCP is an open protocol that enables communication and interoperability between healthcare agentic applications._**
 
-At Innovaccer, we are proud to launch the Healthcare Model Context Protocol (HMCP). HMCP is a specialized extension of the Model Context Protocol (MCP) specifically crafted to integrate healthcare AI agents with data, tools, and workflows, all within a secure, compliant, and standards-based framework.
+Healthcare organizations are adopting generative AI agents across care delivery and operations. Connecting those agents to healthcare data, tools and workflows raises questions that general-purpose protocols leave open: which patient a request is about, which checks ran on the data that was returned, and how access is authorized.
 
-## Overview & Motivation
+Innovaccer developed the Healthcare Model Context Protocol (HMCP). HMCP is a specialized extension of the Model Context Protocol (MCP) designed to integrate healthcare AI agents with data, tools and workflows within a standards-based framework. HMCP offers building blocks for these questions; how they are configured, validated and operated is the responsibility of the implementer (see the [Disclaimer](#disclaimer)).
 
-### Overview
-MCP Model Context Protocol was created by Anthropic to allow host agentic applications (like Claude Desktop App, Cursor) to communicate with other systems (like local files, API servers) to augment the LLM input with additional context 
+![HMCP in action](images/HMCP_In_Action.png)
 
-#### Why Healthcare Needs HMCP
+## Project status
 
-Healthcare demands precision and accountability. AI agents operating within this domain must handle sensitive patient data securely, adhere to rigorous compliance regulations, and maintain consistent interoperability across diverse clinical workflows. Standard, generalized protocols fall short. That is why we developed HMCP.
+HMCP is **alpha (0.x)** software. The public API may change between minor versions; dependents should pin a version range.
 
-Built upon the robust foundation of open source MCP (Model Context Protocol), HMCP is designed around industry standard controls (OAuth 2.0, OpenID Connect following SMART on FHIR, Data Segregation & Encryption, Audit trails, Rate Limiting & Risk Assessment, etc.) to introduce essential healthcare-specific capabilities and achieve:
-- HIPAA-compliant security and access management *(partially implemented — opt-in OAuth 2.0 / OIDC authentication only; encryption, audit logging and rate limiting are not yet implemented)*
-- Comprehensive logging and auditing of agent activities *(specified; not yet implemented)*
-- Separation and protection of patient identities *(specified; not yet implemented — see [Patient Context](docs/specification/context.md))*
-- Bidirectional agent-to-agent communication via sampling endpoints *(implemented)*
-- Support for both SSE and streamable-http transports *(implemented; `stdio` is also supported and is the default)*
-- Facilitation of secure, compliant collaboration between multiple AI agents
+## What HMCP 0.1.0 is
 
-These enhancements are being designed to ensure that HMCP can meet the unique regulatory, security, and operational needs of healthcare environments.
+HMCP **0.1.0** targets base MCP spec **2026-07-28** and ships the Python SDK in this
+repository. It adds two reverse-DNS extensions and authentication guidance on top of the
+base protocol.
 
-#### Implementation status
+HMCP 0.1.0 provides the following capabilities:
 
-The list above describes the intended scope of the HMCP protocol and roadmap; individual items are annotated with their current SDK status where applicable. For the authoritative per-feature status, see the [SDK implementation status](src/hmcp/README.md).
+- **Patient context extension** (`com.innovaccer/hmcp-patient-context`, revision `"1"`): a server-minted, opaque handle for a single patient. The host opens it, and every patient-scoped tool call carries it in the request `_meta`. See [Patient context](docs/specification/patient-context.md).
+- **Guardrails extension** (`com.innovaccer/hmcp-guardrails`, revision `"1"`) with **four reference guardrails**: declarative, best-effort checks that the server applies to tool calls and reports in the result `_meta`. See [Guardrails](docs/specification/guardrails.md).
+- **OAuth 2.1 client (OAuth 2.0 + PKCE)** (`hmcp.shared.auth.OAuthClient`): client credentials, authorization code with PKCE, refresh and revocation; usable in a SMART on FHIR deployment. Server-side enforcement is opt-in (`token_verifier` or `auth_server_provider`; the default is `None`).
+- **Audience-bound auth defaults**: when an `AuthSettings` object is supplied, RFC 8707 audience binding is enforced by default.
+- **Patient-context audit events**: open/get/close, tool calls and lifecycle changes emit `AuditEvent`s through a pluggable `AuditSink` (default `LoggingAuditSink`).
+- **Transports**: `streamable-http` and `stdio` (the default).
 
-**_Think of HMCP as the "universal connector" for healthcare AI—a trusted, standardized way to ensure seamless interoperability._**
+HMCP 0.1.0 **removed** the bidirectional **sampling** feature (`@server.sampling()`, `HMCPClient`, `create_message`) and the HTTP+SSE transport. MCP 2026-07-28 deprecated both, and HMCP 0.1.0 no longer offers either. See [Migrating to 0.1](docs/specification/migration-0.1.md) for the replacement patterns.
 
-![image info](./images/HMCP_In_Action.png)
+## Quick start
 
-## Quick Start
+### Install
 
-### Installing HMCP
-
-Python 3.11 or newer is required.
+HMCP is published on PyPI as **`innovaccer-hmcp`** and requires Python 3.11 or newer:
 
 ```bash
-# Temporary steps until the package is published:
-
-# Install from a local checkout
-pip install .
-
-# ...or build a wheel and install that
-# (the wheel filename tracks the project version)
-pip install hatch
-hatch build
-pip install dist/hmcp-0.0.6-py3-none-any.whl
+pip install innovaccer-hmcp
 ```
 
-### Creating an HMCP Server
+The import name is **`hmcp`** (for example, `from hmcp.server import HMCPServer`). The
+unrelated PyPI project named [`hmcp`](https://pypi.org/project/hmcp/) is **not** this
+SDK; install `innovaccer-hmcp`.
+
+To work from a clone of this repository instead, install it in editable mode with the
+development extras:
+
+```bash
+git clone https://github.com/innovaccer/Healthcare-MCP.git
+cd Healthcare-MCP
+pip install -e ".[dev]"
+```
+
+### A minimal server
+
+`HMCPServer` builds on the MCP SDK's `MCPServer` and authenticates every request with a `TokenVerifier`. Patient context and guardrails are configured, and patient-scoped tools are registered with `@server.tool(patient_scope=...)`:
 
 ```python
-from hmcp.server.hmcp_server import HMCPServer
-from mcp.shared.context import RequestContext
-import mcp.types as types
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 
-# Initialize the server
+from hmcp.server.guardrails import GuardrailsConfig
+from hmcp.server.hmcp_server import HMCPServer
+from hmcp.server.patient_context import PatientContextConfig
+from hmcp.shared.guardrails import (
+    patient_context_consistency,
+    redaction_placeholder_writeback,
+)
+from hmcp.shared.types import require_patient_context
+
+SERVER_URL = "http://127.0.0.1:8050/mcp"
+DEMO_TOKEN = "demo-token-test-0001"
+
+
+class DemoTokenVerifier(TokenVerifier):
+    """DEMO ONLY: accept one static token and reject everything else.
+
+    A real deployment validates a signed token here. The token's ``patient``
+    claim is the SMART launch context the default policy checks.
+    """
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if token != DEMO_TOKEN:
+            return None
+        return AccessToken(
+            token=token,
+            client_id="demo-app",
+            scopes=["patient/*.rs"],
+            resource=SERVER_URL,
+            subject="dr-demo",
+            claims={"iss": "https://auth.example.com", "patient": "test-0001"},
+        )
+
+
 server = HMCPServer(
-    name="Your Agent Name",
-    version="1.0.0",
-    host="0.0.0.0",
-    port=8050,
-    debug=True,
-    instructions="Your agent's description"
+    name="patient-demo",
+    version="0.1.0",
+    token_verifier=DemoTokenVerifier(),
+    auth=AuthSettings(
+        issuer_url="https://auth.example.com",
+        resource_server_url=SERVER_URL,
+        validate_token_resource=True,
+    ),
+    patient_context=PatientContextConfig(default_tool_scope="patient"),
+    guardrails=GuardrailsConfig(
+        definitions=[patient_context_consistency(), redaction_placeholder_writeback()],
+    ),
 )
 
-# Define a sampling endpoint for agent-to-agent communication
-@server.sampling()
-async def handle_sampling(context, params):
-    # Process incoming messages
-    latest_message = params.messages[-1]
-    message_content = latest_message.content.text if hasattr(latest_message.content, 'text') else str(latest_message.content)
-    
-    return types.CreateMessageResult(
-        model="your-agent-name",
-        role="assistant",
-        content=types.TextContent(
-            type="text",
-            text=f"Processed: {message_content}"
-        ),
-        stopReason="endTurn"
-    )
 
-# Start the server ('stdio' (default), 'sse' or 'streamable-http')
-server.run(transport="streamable-http")
+@server.tool(patient_scope="patient")
+def get_observations() -> dict:
+    context = require_patient_context()
+    return {"patient": context.patient.reference}
+
+
+if __name__ == "__main__":
+    server.run(transport="streamable-http", host="127.0.0.1", port=8050)
 ```
 
-### Connecting with an HMCP Client
+### A minimal client
+
+`HMCPClientConnector` sends the bearer token, opens the patient context and calls a patient-scoped tool. It advertises the patient-context and guardrails extensions by default:
 
 ```python
-from hmcp.client.client_connector import HMCPClientConnector
 import asyncio
+from typing import Any
 
-async def connect_to_agent():
-    # Create client connector (handles auth and connection automatically)
-    client = HMCPClientConnector(
-        url="http://localhost:8050",
-        debug=True
+from hmcp.client.client_connector import HMCPClientConnector
+from hmcp.shared.constants import GUARDRAILS_EXTENSION, META_REPORT
+
+DEMO_TOKEN = "demo-token-test-0001"
+
+
+def _report_entries(result: Any) -> list[str]:
+    guardrails = (result.meta or {}).get(GUARDRAILS_EXTENSION) or {}
+    report = guardrails.get(META_REPORT) or []
+    return [f"{e['id']}/{e['stage']}={e['verdict']}" for e in report]
+
+
+async def run(connector: HMCPClientConnector) -> None:
+    handle = await connector.open_patient_context(
+        "Patient/test-0001", purpose_of_use="TREAT"
     )
-    
     try:
-        # Connect to the server (supports 'sse' or 'streamable-http')
-        await client.connect(transport="streamable-http")
-        
-        # Send a message using simplified interface
-        response = await client.create_message(
-            message="Your message here",
-            role="user"
+        result = await connector.call_tool(
+            "get_observations",
+            patient_context=handle,
+            require_guardrails=[
+                "com.innovaccer.hmcp.guardrails/patient-context-consistency"
+            ],
         )
-        
-        # Process the response
-        print(f"Response: {response.get('content')}")
-        
-        # List available tools
-        tools = await client.list_tools()
-        print(f"Available tools: {[tool.name for tool in tools]}")
-        
+        print(result.content[0].text)
+        for entry in _report_entries(result):
+            print(f"guardrail report: {entry}")
     finally:
-        # Clean up connection
-        await client.cleanup()
+        await connector.close_patient_context(handle)
 
-# Run the client
-asyncio.run(connect_to_agent())
+
+async def main() -> None:
+    async with HMCPClientConnector(
+        url="http://127.0.0.1:8050/mcp",
+        headers={"Authorization": f"Bearer {DEMO_TOKEN}"},
+    ) as connector:
+        await run(connector)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-### Multi-Agent Workflows
+> **Important:** `SmartLaunchPolicy` (the default) refuses every `open` when no token carries a SMART `patient` claim, failing closed. Production deployments supply tokens from a SMART authorization server (or a custom `AccessPolicy`); the static token above is demo-only.
 
-HMCP supports complex multi-agent workflows where specialized agents collaborate to complete healthcare tasks:
-
-```python
-from hmcp.client.client_connector import HMCPClientConnector
-from agents import Agent
-import asyncio
-
-async def multi_agent_workflow():
-    # Connect to specialized healthcare agents
-    emr_client = HMCPClientConnector(url="http://localhost:8050", debug=True)
-    patient_client = HMCPClientConnector(url="http://localhost:8060", debug=True)
-    
-    await emr_client.connect(transport="streamable-http")
-    await patient_client.connect(transport="streamable-http")
-    
-    try:
-        # Step 1: Query patient data agent
-        patient_response = await patient_client.create_message(
-            message="Get patient ID for John Smith"
-        )
-        patient_id = patient_response.get('content')
-        
-        # Step 2: Update EMR with clinical data
-        emr_response = await emr_client.create_message(
-            message=f'Update clinical data for {patient_id}: BP 130/85, HR 72'
-        )
-        
-        print(f"Workflow complete: {emr_response.get('content')}")
-        
-    finally:
-        await emr_client.cleanup()
-        await patient_client.cleanup()
-
-asyncio.run(multi_agent_workflow())
-```
-
-For more detailed examples including multi-agent handoffs and OpenAI agent integration, see:
-- [EMR & Patient Data Example](./examples/emr_patient_data_example/)
-- [Multi-Agent Handoff Demo](./examples/multi_agent_demo/)
-
-For more detailed examples and advanced usage, see the [HMCP SDK documentation](./src/hmcp/README.md) and [examples directory](./examples/).
-
-## Key Features
-
-### Transport Support
-HMCP supports the following transports for flexibility in different deployment scenarios:
-- **stdio**: Standard input/output transport; the default, ideal for local and subprocess use
-- **SSE**: Server-to-client messages arrive over a single long-lived SSE (server-push) stream, while client-to-server messages are sent via an HTTP POST endpoint, making the transport bidirectional in effect, ideal for real-time updates
-- **streamable-http**: Modern HTTP-based streaming, better firewall compatibility
-
-`stdio` applies to the server (suited to local and subprocess use); `HMCPClientConnector` connects over `sse` or `streamable-http`.
-
-### OAuth 2.0 Authentication
-OAuth 2.0 client support following SMART on FHIR specifications (the server enforces authentication only when constructed with an `auth_server_provider`; the default is `None`):
-- Client credentials flow for server-to-server communication
-- Authorization code flow with PKCE for user-facing applications
-- Patient-scoped access tokens for data segregation *(specified; not yet implemented — see [Patient Context](docs/specification/context.md))*
-- Token revocation
-
-See [OAuth Client Documentation](./src/hmcp/shared/auth/oauth_client_README.md) for detailed usage.
-
-### Simplified Client Interface
-The `HMCPClientConnector` provides a simplified interface for:
-- Automatic connection management
-- Built-in authentication handling
-- Tool and resource discovery
-- Sampling endpoint communication
-- Proper cleanup and resource management
-
-## Specification
-
-[Specification](./docs/specification/index.md)
-
-## HMCP SDK
-
-[HMCP SDK](./src/hmcp/README.md)
+A full runnable example is in [examples/ehr_patient_context](examples/ehr_patient_context/README.md).
 
 ## Examples
 
-[Examples](./examples/README.md)
+The [examples](examples/) directory holds runnable, synthetic-data examples:
+
+- **`ehr_patient_context`:** a demo EHR server and client that open a patient context and call a patient-scoped tool.
+- **`custom_guardrails`:** writing and registering custom guardrail definitions.
+- **`quickstart`:** a minimal end-to-end server and client.
+
+## Security and compliance
+
+To report a vulnerability, follow [SECURITY.md](SECURITY.md). Do **not** open a public issue, discussion or pull request.
+
+HMCP provides **building blocks** for handling patient data: patient-context binding designed to fail closed, a guardrails extension that can redact or block tool traffic, and audience-bound OAuth 2.1 defaults. These building blocks do not by themselves make a deployment secure or compliant with HIPAA or any other regulation. That depends on the environment, identity provider, TLS, auditing, retention and operating policies of the deployment, and responsibility rests with the implementer (see the [Disclaimer](#disclaimer)). HMCP 0.1.0 does not provide encryption at rest or rate limiting. Deployments must run the server behind TLS and supply a production `TokenVerifier`.
+
+## Documentation
+
+- [Specification overview](docs/specification/index.md)
+- [Patient context](docs/specification/patient-context.md)
+- [Guardrails](docs/specification/guardrails.md)
+- [Authentication and scopes](docs/specification/auth.md)
+- [Migrating to 0.1](docs/specification/migration-0.1.md)
+- [HMCP SDK](src/hmcp/README.md)
+- [Examples](examples/README.md)
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this
-project.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
 
 ## License
 
-This project is licensed under the MIT License—see the [LICENSE](LICENSE) file for
-details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Disclaimer
+
+HMCP is provided "as is", without warranty of any kind, under the [MIT License](LICENSE). Innovaccer makes no guarantee of accuracy, completeness, regulatory compliance or patient safety. The guardrails are best-effort checks that can miss protected health information, and a `pass` verdict does not mean that content is free of it. HMCP does not by itself make a system compliant with HIPAA or any other regulation, and it is not intended for use as a medical device or for clinical decision-making. The implementer is solely responsible for validation, compliance, security and outcomes; to the maximum extent permitted by law, Innovaccer and the contributors accept no liability for any use of HMCP.
