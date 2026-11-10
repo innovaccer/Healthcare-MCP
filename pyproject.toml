@@ -55,7 +55,7 @@ dev = [
     "pytest-cov>=4.1",
     "pytest-mock>=3.11",
     "jsonschema>=4.20",
-    "black==25.1.0",
+    "black==26.10.1",
 ]
 
 [project.urls]
